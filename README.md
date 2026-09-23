@@ -155,6 +155,32 @@ Bewegen der Maus über Fenster kurzzeitig 3–8 %; beim Wechsel auf ein Fenster
 anderer Größe muss das Panel seinen Puffer neu anlegen, was einen kurzen
 Speicherausschlag verursacht, der sofort wieder zurückgeht.
 
+## Neustart überleben
+
+Ein Neustart killt jede laufende Claude-Code-Sitzung. Die Chats selbst bleiben
+auf der Platte; verloren geht nur die Zuordnung — welches Fenster gehörte zu
+welcher Sitzung, in welchem Ordner, mit welchen Startoptionen.
+
+```
+tools/sessions.py save      # vor dem Neustart
+tools/sessions.py show      # nachsehen, was gesichert ist
+tools/sessions.py restore   # nach dem Neustart
+```
+
+`save` liest die offenen Terminal-Fenster, holt aus jedem Titel den Sessionnamen
+und schlägt ihn im `aiTitle`-Feld der Sitzungsdateien unter
+`~/.claude/projects` nach. Das liefert Sitzungs-ID, Startverzeichnis und
+Startoptionen. `restore` öffnet daraus wieder je ein Terminal-Fenster mit
+`claude --resume <id>`.
+
+Die Beschriftungen kommen dabei von selbst zurück: Der Speicherschlüssel ist
+Arbeitsverzeichnis plus automatischer Name, und beides ist nach dem
+Wiederherstellen dasselbe.
+
+Als Startverzeichnis zählt der **erste** `cwd`-Eintrag einer Sitzungsdatei.
+Spätere wandern mit, wenn die Sitzung zwischendurch das Verzeichnis wechselt —
+danach zu greifen führt beim Wiederherstellen in den falschen Ordner.
+
 ## Fehlersuche
 
 ```

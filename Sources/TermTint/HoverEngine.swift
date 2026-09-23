@@ -66,6 +66,7 @@ final class HoverEngine {
     private var isSuspended = false
 
     private let watcher = TerminalWatcher()
+    private let herald = Herald()
     private let panel = OverlayPanel()
 
     private var states: [WindowRef: WindowState] = [:]
@@ -80,6 +81,8 @@ final class HoverEngine {
     /// the next window. A short grace period removes the whole race: if a new
     /// window shows up in time, the overlay simply moves there.
     private var activityTimer: Timer?
+    /// Minimise changes waiting for the overview to close.
+    private var pendingMinimize: [WindowRef: Bool] = [:]
     private var pendingHide: DispatchWorkItem?
     private static let hideGrace: TimeInterval = 0.09
 
@@ -99,6 +102,7 @@ final class HoverEngine {
         panel.overlay.onCommit = { [weak self] name in self?.finishEditing(saving: name) }
         panel.overlay.onEndEditing = { [weak self] in self?.finishEditing(saving: nil) }
 
+        herald.onSelect = { [weak self] ref in self?.activate(ref) }
         watcher.onEvent = { [weak self] event in self?.handle(event) }
         watcher.start()
         refreshWindows()
@@ -171,30 +175,49 @@ final class HoverEngine {
     }
 
     /// Puts a window away or brings it back, without switching to it.
+    ///
+    /// The change is recorded here, not carried out. The overview is open only
+    /// while ⌥ is held, and ⌥ is macOS's own "minimise every window" gesture —
+    /// asking Terminal to minimise one window in that moment took the whole set
+    /// with it. The list updates immediately, the windows follow once the key
+    /// is released.
     func toggleMinimize(_ ref: WindowRef) {
         guard let state = states[ref] else { return }
         let minimized = state.isMinimized
-        Log.write("Minimieren umschalten: \(state.displayName) -> \(minimized ? "zurückholen" : "minimieren")")
-        watcher.setMinimized(!minimized, for: ref)
-        if Log.isEnabled {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-                guard let self else { return }
-                let report = self.states.map { key, value in
-                    "\(value.displayName)=\(self.watcher.isMinimized(key) ? "MIN" : "offen")"
-                }.joined(separator: ", ")
-                Log.write("  Zustand danach: \(report)")
-            }
-        }
+        Log.write("Vorgemerkt: \(state.displayName) -> \(minimized ? "zurückholen" : "minimieren")")
+        pendingMinimize[ref] = !minimized
+        states[ref]?.isMinimized = !minimized
         states[ref]?.isOnScreen = minimized
         if ref == hovered { hovered = nil; hideNow() }
     }
 
-    /// Brings every minimised window back out of the Dock.
+    /// Brings every minimised window back out of the Dock — recorded now,
+    /// carried out once the overview closes, for the same reason as above.
     func restoreAllMinimized() {
         for ref in Array(states.keys) where states[ref]?.isMinimized == true {
-            watcher.setMinimized(false, for: ref)
+            pendingMinimize[ref] = false
             states[ref]?.isMinimized = false
             states[ref]?.isOnScreen = true
+        }
+    }
+
+    /// Runs once the overview is gone *and* ⌥ is actually released — closing
+    /// with Escape leaves the key down, and applying then would trigger the
+    /// system's minimise-everything gesture again.
+    func applyPendingWindowStates(attempt: Int = 0) {
+        guard !pendingMinimize.isEmpty else { return }
+
+        if NSEvent.modifierFlags.contains(.option), attempt < 20 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                self?.applyPendingWindowStates(attempt: attempt + 1)
+            }
+            return
+        }
+
+        let work = pendingMinimize
+        pendingMinimize.removeAll()
+        for (ref, minimized) in work {
+            watcher.setMinimized(minimized, for: ref)
         }
     }
 
@@ -312,7 +335,10 @@ final class HoverEngine {
                 states[ref]?.isMinimized = info.minimized
                 states[ref]?.isOnScreen = !info.minimized
                 applyTitle(info.title, to: ref)
-            } else if info.frame != .zero {
+            } else if info.frame != .zero || info.minimized {
+                // A minimised window reports no usable geometry. Skipping it
+                // here meant a window already in the Dock at launch never
+                // showed up in the overview at all.
                 var fresh = makeState(for: ref, frame: info.frame, title: info.title)
                 fresh.isMinimized = info.minimized
                 fresh.isOnScreen = !info.minimized
@@ -530,19 +556,38 @@ final class HoverEngine {
     }
 
     private func tickActivity() {
-        var anyWorking = false
-        var finished = false
+        var busy = false
+        var displayChanged = false
+        var toAnnounce: [WindowRef] = []
+
         for ref in Array(states.keys) {
             guard var state = states[ref] else { continue }
-            if state.activity.refresh() { finished = true }
-            if state.activity.isWorking { anyWorking = true }
+            if state.activity.refresh() { displayChanged = true }
+            if state.activity.claimAnnouncement() { toAnnounce.append(ref) }
+            // Keep ticking while a finish is still waiting out its settle
+            // window, otherwise the announcement would never be reached.
+            if state.activity.isWorking || state.activity.isSettling { busy = true }
             states[ref] = state
         }
-        if !anyWorking {
+
+        if !busy {
             activityTimer?.invalidate()
             activityTimer = nil
         }
-        if finished { redrawHovered() }
+
+        if announcementsEnabled {
+            for ref in toAnnounce {
+                guard let state = states[ref] else { continue }
+                herald.announce(name: state.displayName, tint: state.tint, ref: ref)
+            }
+        }
+        if displayChanged { redrawHovered() }
+    }
+
+    /// Whether finished sessions are announced. Remembered across restarts.
+    var announcementsEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "announce") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "announce") }
     }
 
     private func scheduleHide() {
@@ -608,7 +653,6 @@ final class HoverEngine {
         guard let terminalPID = watcher.pid else { return [] }
         let ownPID = ProcessInfo.processInfo.processIdentifier
         var result: [CGRect] = []
-        var checks = 0
 
         for entry in currentWindowList() {
             guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0,
@@ -631,16 +675,12 @@ final class HoverEngine {
             let overlap = cocoa.intersection(frame)
             guard !overlap.isNull, overlap.width > 2, overlap.height > 2 else { continue }
 
-            // Another app's window only counts once the system confirms a click
-            // there would really land on it.
-            if pid != terminalPID, checks < 4 {
-                checks += 1
-                let probe = CGPoint(x: overlap.midX, y: overlap.midY)
-                // Only a confirmed foreign window cuts into the overlay; an
-                // uncertain answer must not make the mask flicker.
-                guard case .otherApp = watcher.hitTest(atCocoa: probe) else { continue }
-            }
-
+            // No hit test here, deliberately. Asking the system what a click
+            // would hit sounds safer but is wrong at exactly this moment: the
+            // overlay itself already covers the area, so the answer is neither
+            // "that other app" nor "Terminal", and treating that uncertainty as
+            // "do not clip" let the overlay paint straight over the window in
+            // front of it. The list order above already settles the question.
             result.append(CGRect(x: overlap.minX - frame.minX,
                                  y: overlap.minY - frame.minY,
                                  width: overlap.width,

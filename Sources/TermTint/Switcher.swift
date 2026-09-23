@@ -33,6 +33,9 @@ final class Switcher {
     var onToggleMinimize: ((WindowRef) -> Void)?
     /// Brings every minimised window back.
     var onRestoreAll: (() -> Void)?
+    /// Called once the overview is closed, so window changes are applied while
+    /// no modifier key is held.
+    var onApplyPending: (() -> Void)?
 
     private let panel: SwitcherPanel
     private let view = SwitcherView()
@@ -59,10 +62,6 @@ final class Switcher {
         guard isShowing else { return }
         onRestoreAll?()
         refreshEntries()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
-            guard self?.isShowing == true else { return }
-            self?.refreshEntries()
-        }
     }
 
     private func toggleMinimize(_ index: Int) {
@@ -70,11 +69,6 @@ final class Switcher {
         onToggleMinimize?(entries[index].ref)
         selection = index
         refreshEntries()
-        // Minimising is animated, so the real state lands a moment later.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
-            guard self?.isShowing == true else { return }
-            self?.refreshEntries()
-        }
     }
 
     private func refreshEntries() {
@@ -231,6 +225,7 @@ final class Switcher {
             previousApp.activate()
         }
         previousApp = nil
+        onApplyPending?()
     }
 
     private func sorted(_ entries: [Entry]) -> [Entry] {

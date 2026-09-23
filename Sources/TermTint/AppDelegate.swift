@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switcher.setOverlayEnabled = { [engine] enabled in engine.setEnabled(enabled) }
         switcher.onToggleMinimize = { [engine] ref in engine.toggleMinimize(ref) }
         switcher.onRestoreAll = { [engine] in engine.restoreAllMinimized() }
+        switcher.onApplyPending = { [engine] in engine.applyPendingWindowStates() }
 
         if AXIsProcessTrusted() {
             start()

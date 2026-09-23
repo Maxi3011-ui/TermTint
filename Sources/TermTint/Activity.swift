@@ -7,7 +7,17 @@ import Foundation
 struct Activity {
 
     /// A glyph that changed this recently means the spinner is still turning.
+    /// Short, because the overview should react quickly.
     static let workingWindow: TimeInterval = 3
+
+    /// How long the glyph must stand completely still before a session counts
+    /// as *really* finished. Three seconds is a pause between two steps — a
+    /// sub-agent returning, a tool call starting — and announcing those was
+    /// the whole annoyance.
+    static let settleWindow: TimeInterval = 15
+
+    /// A burst of work shorter than this is not worth interrupting anyone for.
+    static let minimumWork: TimeInterval = 6
 
     var marker: String?
     var markerChangedAt = Date()
@@ -15,10 +25,17 @@ struct Activity {
     /// *change* does. Without this every window would look freshly started
     /// after a restart, complete with an unread dot.
     private var hasSeenMarker = false
+    private var workStartedAt: Date?
+    private var announced = true
+
     var isWorking = false
     var finishedAt: Date?
     /// Set when a window stops working, cleared once you have looked at it.
     var hasUnseenResult = false
+
+    /// True while a finish is waiting out the settle window. The ticker has to
+    /// keep running until then, so it cannot be folded into `isWorking`.
+    var isSettling: Bool { !announced && !isWorking && finishedAt != nil }
 
     /// - Returns: true when the window just started working.
     mutating func noteMarker(_ new: String?, now: Date = Date()) -> Bool {
@@ -28,20 +45,38 @@ struct Activity {
         marker = new
         markerChangedAt = now
         guard new != nil, !isFirst else { return false }
+
         let wasWorking = isWorking
         isWorking = true
         hasUnseenResult = false
         finishedAt = nil
+        if !wasWorking {
+            workStartedAt = now
+            announced = false
+        }
         return !wasWorking
     }
 
     /// Call regularly while something is working. Returns true when this
-    /// window has just finished.
+    /// window has just finished, for display purposes.
     mutating func refresh(now: Date = Date()) -> Bool {
         guard isWorking, now.timeIntervalSince(markerChangedAt) >= Self.workingWindow else { return false }
         isWorking = false
         finishedAt = markerChangedAt
         hasUnseenResult = true
+        return true
+    }
+
+    /// Returns true exactly once, and only when the session has been quiet
+    /// long enough that a brief pause can be ruled out.
+    mutating func claimAnnouncement(now: Date = Date()) -> Bool {
+        guard !announced, !isWorking, let finishedAt else { return false }
+        guard now.timeIntervalSince(markerChangedAt) >= Self.settleWindow else { return false }
+
+        announced = true
+        guard let start = workStartedAt,
+              finishedAt.timeIntervalSince(start) >= Self.minimumWork
+        else { return false }
         return true
     }
 

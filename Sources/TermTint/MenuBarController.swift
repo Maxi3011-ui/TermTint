@@ -50,6 +50,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         shuffle.isEnabled = engine.windowCount > 0
         menu.addItem(shuffle)
 
+        let announce = NSMenuItem(title: "Fertig-Meldungen", action: #selector(toggleAnnouncements), keyEquivalent: "")
+        announce.target = self
+        announce.state = engine.announcementsEnabled ? .on : .off
+        menu.addItem(announce)
+
         let clear = NSMenuItem(title: "Alle Namen löschen", action: #selector(clearNames), keyEquivalent: "")
         clear.target = self
         clear.isEnabled = engine.windowCount > 0
@@ -83,6 +88,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func reshuffle() {
         engine.reshuffleColors()
+    }
+
+    @objc private func toggleAnnouncements() {
+        engine.announcementsEnabled = !engine.announcementsEnabled
     }
 
     @objc private func clearNames() {
