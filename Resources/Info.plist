@@ -24,6 +24,8 @@
 	<true/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>TermTint überträgt den Namen, den du einem Fenster gibst, in die Claude-Sitzung darin.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>

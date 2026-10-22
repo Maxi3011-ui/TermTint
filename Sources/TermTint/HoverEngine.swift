@@ -67,6 +67,7 @@ final class HoverEngine {
 
     private let watcher = TerminalWatcher()
     private let herald = Herald()
+    private let sessionLog = SessionLog()
     private let panel = OverlayPanel()
 
     private var states: [WindowRef: WindowState] = [:]
@@ -563,7 +564,13 @@ final class HoverEngine {
         for ref in Array(states.keys) {
             guard var state = states[ref] else { continue }
             if state.activity.refresh() { displayChanged = true }
-            if state.activity.claimAnnouncement() { toAnnounce.append(ref) }
+            // The window title only gets us as far as "the spinner stopped".
+            // Whether the session is really finished is decided by its session
+            // file, which keeps being written during long steps.
+            let liveness = state.activity.isSettling
+                ? sessionLog.liveness(for: state.autoName)
+                : SessionLog.Liveness.pending
+            if state.activity.claimAnnouncement(liveness: liveness) { toAnnounce.append(ref) }
             // Keep ticking while a finish is still waiting out its settle
             // window, otherwise the announcement would never be reached.
             if state.activity.isWorking || state.activity.isSettling { busy = true }
@@ -755,6 +762,7 @@ final class HoverEngine {
             // An empty entry hands the window back to its automatic label.
             states[ref]?.manualName = name.isEmpty ? nil : name
             remember(ref)
+            renameSession(ref, to: name)
         }
 
         panel.ignoresMouseEvents = true
@@ -788,6 +796,26 @@ final class HoverEngine {
         } else {
             LabelStore.forget(keys)
         }
+    }
+
+    /// Carries the name over into the Claude session, so the chat is called
+    /// the same thing. Only for Claude windows — other programs would simply
+    /// try to run "/rename" as a command.
+    private func renameSession(_ ref: WindowRef, to name: String) {
+        guard renameSessionsEnabled,
+              let state = states[ref],
+              state.role == .claude,
+              !name.isEmpty,
+              name != state.autoName
+        else { return }
+        SessionRenamer.rename(inWindowTitled: state.title, to: name)
+    }
+
+    /// Off by default is wrong here — the point is that it just happens — but
+    /// it has to be switchable, since it types into a live session.
+    var renameSessionsEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "renameSessions") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "renameSessions") }
     }
 
     // MARK: - Hit testing

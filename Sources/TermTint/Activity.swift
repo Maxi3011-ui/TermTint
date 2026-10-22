@@ -10,11 +10,9 @@ struct Activity {
     /// Short, because the overview should react quickly.
     static let workingWindow: TimeInterval = 3
 
-    /// How long the glyph must stand completely still before a session counts
-    /// as *really* finished. Three seconds is a pause between two steps — a
-    /// sub-agent returning, a tool call starting — and announcing those was
-    /// the whole annoyance.
-    static let settleWindow: TimeInterval = 15
+    /// How long the glyph must stand still before the session file is even
+    /// consulted. Only a first filter now — the file decides.
+    static let settleWindow: TimeInterval = 8
 
     /// A burst of work shorter than this is not worth interrupting anyone for.
     static let minimumWork: TimeInterval = 6
@@ -67,17 +65,45 @@ struct Activity {
         return true
     }
 
-    /// Returns true exactly once, and only when the session has been quiet
-    /// long enough that a brief pause can be ruled out.
-    mutating func claimAnnouncement(now: Date = Date()) -> Bool {
+    /// How long to keep waiting for a session to go quiet before giving up.
+    /// Without this a session that never rests would hold the ticker open.
+    static let giveUpAfter: TimeInterval = 600
+
+    /// Returns true exactly once, and only when the session really has come to
+    /// rest. The still spinner alone is not enough — it stands still during
+    /// long steps too, which is what made announcements fire too early.
+    mutating func claimAnnouncement(liveness: SessionLog.Liveness,
+                                    now: Date = Date()) -> Bool {
         guard !announced, !isWorking, let finishedAt else { return false }
+        // Cheap gate first: no point touching files while the spinner still
+        // turned a moment ago.
         guard now.timeIntervalSince(markerChangedAt) >= Self.settleWindow else { return false }
 
-        announced = true
         guard let start = workStartedAt,
               finishedAt.timeIntervalSince(start) >= Self.minimumWork
-        else { return false }
-        return true
+        else {
+            announced = true
+            return false
+        }
+
+        if now.timeIntervalSince(finishedAt) >= Self.giveUpAfter {
+            announced = true
+            return false
+        }
+
+        switch liveness {
+        case .pending:
+            // Index still building — keep the claim open and ask again.
+            return false
+        case .unknown:
+            // No session file for this window. Silence beats guessing.
+            announced = true
+            return false
+        case .quiet(let seconds):
+            guard seconds >= SessionLog.quietThreshold else { return false }
+            announced = true
+            return true
+        }
     }
 
     /// Short, glanceable state — "arbeitet", "fertig vor 4 Min.".

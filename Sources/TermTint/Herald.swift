@@ -94,15 +94,20 @@ final class Herald {
 
 final class BannerPanel: NSPanel {
 
-    static let size = CGSize(width: 392, height: 96)
+    static let size = CGSize(width: 336, height: 78)
     static let margin: CGFloat = 16
     private static let lifetime: TimeInterval = 7
+
+    /// Past this much sideways travel the card is considered flung away.
+    private static let dismissDistance: CGFloat = 55
 
     var onClick: (() -> Void)?
     var onExpire: (() -> Void)?
 
     private let banner: BannerView
     private var expiry: DispatchWorkItem?
+    /// Where the card belongs when it is not being pushed around.
+    private var restingFrame: CGRect = .zero
 
     init(phrase: String, name: String, tint: Tint) {
         banner = BannerView(phrase: phrase, name: name, tint: tint)
@@ -124,12 +129,16 @@ final class BannerPanel: NSPanel {
         alphaValue = 0
         contentView = banner
         banner.onClick = { [weak self] in self?.onClick?() }
+        banner.onDragBegan = { [weak self] in self?.pauseExpiry() }
+        banner.onDragMoved = { [weak self] dx in self?.drag(by: dx) }
+        banner.onDragEnded = { [weak self] dx in self?.settleDrag(by: dx) }
     }
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
     func move(to frame: CGRect) {
+        restingFrame = frame
         guard frame != self.frame else { return }
         if isVisible {
             NSAnimationContext.runAnimationGroup { context in
@@ -144,6 +153,7 @@ final class BannerPanel: NSPanel {
     func appear() {
         // Slide in from the right edge, so it reads as arriving.
         let target = frame
+        restingFrame = target
         setFrame(target.offsetBy(dx: 26, dy: 0), display: false)
         orderFront(nil)
         NSAnimationContext.runAnimationGroup { context in
@@ -153,9 +163,55 @@ final class BannerPanel: NSPanel {
             animator().setFrame(target, display: false)
         }
 
+        startExpiry()
+    }
+
+    // MARK: - Pushing it away
+
+    private func startExpiry() {
+        expiry?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.onExpire?() }
         expiry = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.lifetime, execute: work)
+    }
+
+    /// While a finger is on the card it must not disappear underneath it.
+    func pauseExpiry() {
+        expiry?.cancel()
+        expiry = nil
+    }
+
+    func drag(by dx: CGFloat) {
+        guard restingFrame != .zero else { return }
+        setFrame(restingFrame.offsetBy(dx: dx, dy: 0), display: false)
+        // Fading with distance makes the gesture readable before you commit.
+        alphaValue = max(0.15, 1 - abs(dx) / 240)
+    }
+
+    func settleDrag(by dx: CGFloat) {
+        guard restingFrame != .zero else { return }
+
+        guard abs(dx) >= Self.dismissDistance else {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                animator().setFrame(restingFrame, display: false)
+                animator().alphaValue = 1
+            }
+            startExpiry()
+            return
+        }
+
+        let direction: CGFloat = dx > 0 ? 1 : -1
+        let away = restingFrame.offsetBy(dx: direction * (restingFrame.width + 120), dy: 0)
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            animator().setFrame(away, display: false)
+            animator().alphaValue = 0
+        }, completionHandler: { [weak self] in
+            self?.onExpire?()
+        })
     }
 
     func vanish() {
@@ -173,6 +229,9 @@ final class BannerPanel: NSPanel {
 final class BannerView: NSView {
 
     var onClick: (() -> Void)?
+    var onDragBegan: (() -> Void)?
+    var onDragMoved: ((CGFloat) -> Void)?
+    var onDragEnded: ((CGFloat) -> Void)?
 
     private let effect = NSVisualEffectView()
     private let wash = NSView()
@@ -188,7 +247,7 @@ final class BannerView: NSView {
         super.init(frame: CGRect(origin: .zero, size: BannerPanel.size))
 
         wantsLayer = true
-        layer?.cornerRadius = 16
+        layer?.cornerRadius = 14
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
         layer?.borderWidth = 1
@@ -215,6 +274,9 @@ final class BannerView: NSView {
         // The click has to be handled by the topmost view — anything below it
         // never sees the mouse.
         content.onClick = { [weak self] in self?.onClick?() }
+        content.onDragBegan = { [weak self] in self?.onDragBegan?() }
+        content.onDragMoved = { [weak self] dx in self?.onDragMoved?(dx) }
+        content.onDragEnded = { [weak self] dx in self?.onDragEnded?(dx) }
         content.autoresizingMask = [.width, .height]
         addSubview(content)
     }
@@ -225,9 +287,9 @@ final class BannerView: NSView {
         super.layout()
         effect.frame = bounds
         wash.frame = bounds
-        accent.frame = CGRect(x: 16, y: 18, width: 5, height: bounds.height - 36)
+        accent.frame = CGRect(x: 14, y: 15, width: 4, height: bounds.height - 30)
         content.frame = bounds
-        content.textLeft = accent.frame.maxX + 14
+        content.textLeft = accent.frame.maxX + 12
     }
 
     override func updateTrackingAreas() {
@@ -248,6 +310,12 @@ final class BannerView: NSView {
     private final class ContentView: NSView {
 
         var onClick: (() -> Void)?
+        var onDragBegan: (() -> Void)?
+        var onDragMoved: ((CGFloat) -> Void)?
+        var onDragEnded: ((CGFloat) -> Void)?
+        /// Tracked in screen coordinates: the window moves while dragging, so
+        /// view-local coordinates would chase their own tail.
+        private var dragStart: CGPoint?
         var textLeft: CGFloat = 52 { didSet { needsDisplay = true } }
         var isHot = false { didSet { needsDisplay = true } }
 
@@ -264,8 +332,28 @@ final class BannerView: NSView {
 
         // The banner never becomes key, so the very first click must count.
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-        override func mouseDown(with event: NSEvent) { }
-        override func mouseUp(with event: NSEvent) { onClick?() }
+
+        override func mouseDown(with event: NSEvent) {
+            dragStart = NSEvent.mouseLocation
+            onDragBegan?()
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let dragStart else { return }
+            onDragMoved?(NSEvent.mouseLocation.x - dragStart.x)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            guard let start = dragStart else { return }
+            dragStart = nil
+            let travel = NSEvent.mouseLocation.x - start.x
+            // Barely moved: that was a click, not a push.
+            if abs(travel) < 5 {
+                onClick?()
+            } else {
+                onDragEnded?(travel)
+            }
+        }
 
         override func draw(_ dirtyRect: NSRect) {
             if isHot {
@@ -273,21 +361,21 @@ final class BannerView: NSView {
                 bounds.fill()
             }
 
-            let width = bounds.width - textLeft - 18
+            let width = bounds.width - textLeft - 16
 
             NSAttributedString(string: phrase, attributes: [
-                .font: NSFont.systemFont(ofSize: 12.5, weight: .medium),
+                .font: NSFont.systemFont(ofSize: 11.5, weight: .medium),
                 .foregroundColor: NSColor(white: 1, alpha: 0.62),
-            ]).draw(with: CGRect(x: textLeft, y: bounds.height - 40, width: width, height: 18),
+            ]).draw(with: CGRect(x: textLeft, y: bounds.height - 33, width: width, height: 16),
                     options: [.usesLineFragmentOrigin])
 
             let style = NSMutableParagraphStyle()
             style.lineBreakMode = .byTruncatingTail
             NSAttributedString(string: name.isEmpty ? "Ohne Namen" : name, attributes: [
-                .font: BannerView.rounded(size: 18, weight: .semibold),
+                .font: BannerView.rounded(size: 15.5, weight: .semibold),
                 .foregroundColor: NSColor(white: 1, alpha: 0.96),
                 .paragraphStyle: style,
-            ]).draw(with: CGRect(x: textLeft, y: 22, width: width, height: 26),
+            ]).draw(with: CGRect(x: textLeft, y: 16, width: width, height: 23),
                     options: [.usesLineFragmentOrigin])
         }
     }
