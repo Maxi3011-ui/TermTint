@@ -1,0 +1,69 @@
+#!/bin/bash
+# Steuert TermTint von außen: Rotpunkt setzen und markierte Fenster nach vorn.
+#
+# termtint mark   --self | --pid <PID> | --tty <ttysNNN>
+# termtint unmark --self | --pid <PID> | --tty <ttysNNN>
+# termtint raise-marked
+#
+# Gibt eine Zeile aus. Exit 0 = erledigt, 1 = Fehler, 2 = TermTint antwortet nicht.
+#
+# Das Fenster wird über das Terminal (tty) bestimmt, nicht über den Namen:
+# Namen sind nicht eindeutig, es gibt sie doppelt.
+
+set -u
+basis="$HOME/.termtint"
+eingang="$basis/eingang"
+antwort="$basis/antwort"
+
+fehler() { echo "$1" >&2; exit 1; }
+
+befehl="${1:-}"
+[ -n "$befehl" ] || fehler "Aufruf: termtint mark|unmark --self|--pid <PID>|--tty <tty>   bzw.  termtint raise-marked"
+shift || true
+
+ziel=""
+case "$befehl" in
+  mark|unmark|markiere|demarkiere)
+    case "${1:-}" in
+      --self)
+        ziel=$(ps -o tty= -p "$PPID" 2>/dev/null | tr -d ' ')
+        [ -n "$ziel" ] && [ "$ziel" != "??" ] || ziel=$(ps -o tty= -p $$ 2>/dev/null | tr -d ' ')
+        [ -n "$ziel" ] && [ "$ziel" != "??" ] || fehler "fehler: --self geht nur aus einem Terminal heraus"
+        ;;
+      --pid)
+        [ -n "${2:-}" ] || fehler "fehler: --pid braucht eine Prozessnummer"
+        ziel=$(ps -o tty= -p "$2" 2>/dev/null | tr -d ' ')
+        [ -n "$ziel" ] && [ "$ziel" != "??" ] || fehler "fehler: zu PID $2 gehört kein Terminal"
+        ;;
+      --tty)
+        [ -n "${2:-}" ] || fehler "fehler: --tty braucht einen Namen"
+        ziel="${2#/dev/}"
+        ;;
+      *) fehler "fehler: --self, --pid <PID> oder --tty <ttysNNN> angeben" ;;
+    esac
+    ziel="/dev/$ziel"
+    ;;
+  raise-marked|front|vorn) ;;
+  *) fehler "fehler: unbekannter Befehl $befehl" ;;
+esac
+
+mkdir -p "$eingang" "$antwort" || fehler "fehler: $basis nicht beschreibbar"
+id="$(date +%s)-$$-$RANDOM"
+roh="$basis/.$id"
+printf '%s %s\n' "$befehl" "$ziel" > "$roh" || fehler "fehler: Befehl nicht schreibbar"
+# Erst fertig schreiben, dann hineinlegen — TermTint darf nie ein halbes lesen.
+mv "$roh" "$eingang/$id"
+
+for _ in $(seq 1 60); do
+  if [ -f "$antwort/$id" ]; then
+    zeile=$(cat "$antwort/$id")
+    rm -f "$antwort/$id"
+    code="${zeile%% *}"
+    echo "${zeile#* }"
+    exit "$code"
+  fi
+  sleep 0.1
+done
+rm -f "$eingang/$id"
+echo "fehler: TermTint antwortet nicht (läuft es?)" >&2
+exit 2

@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let engine = HoverEngine()
     private let switcher = Switcher()
+    private let inbox = CommandInbox()
     private var menuBar: MenuBarController?
     private var permissionCheck: Timer?
 
@@ -39,6 +40,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func start() {
         engine.start()
+        inbox.onMark = { [engine] tty, marked in engine.setMark(tty: tty, marked: marked) }
+        inbox.onFront = { [engine] in engine.frontMarked() }
+        inbox.start()
+
         switcher.start()
     }
 

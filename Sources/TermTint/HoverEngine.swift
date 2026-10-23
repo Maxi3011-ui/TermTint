@@ -984,6 +984,44 @@ final class HoverEngine {
 
     var markedCount: Int { states.values.filter(\.isMarked).count }
 
+    /// Marks or unmarks the window a terminal belongs to, named by its tty.
+    ///
+    /// Addressed by tty rather than by name on purpose: names are not unique
+    /// — there are two sessions called "3d drucker✨" — and guessing which one
+    /// was meant would be worse than refusing.
+    func setMark(tty: String, marked: Bool) -> CommandInbox.Outcome {
+        var matches = states.filter { $0.value.tty == tty }
+        if matches.isEmpty {
+            // The tty is only looked up when it is first needed, so fill in
+            // what we do not know yet and look again.
+            let ttys = Freezer.ttys()
+            for (ref, state) in states {
+                guard let id = state.windowID ?? windowID(matching: state.frame),
+                      let found = ttys[id] else { continue }
+                states[ref]?.windowID = id
+                states[ref]?.tty = found
+            }
+            matches = states.filter { $0.value.tty == tty }
+        }
+        guard matches.count == 1, let (ref, state) = matches.first else {
+            return matches.isEmpty ? .notFound : .ambiguous
+        }
+        guard state.isMarked != marked else {
+            return .ok(state.displayName + " (war schon so)")
+        }
+        toggleMark(ref)
+        return .ok(states[ref]?.displayName ?? state.displayName)
+    }
+
+    /// Fetches the marked windows forward and says how many there were.
+    @discardableResult
+    func frontMarked() -> Int {
+        let count = markedCount
+        guard count > 0 else { return 0 }
+        raiseAllMarked()
+        return count
+    }
+
     func clearAllMarks() {
         for ref in Array(states.keys) { states[ref]?.isMarked = false }
         MarkStore.clear()
