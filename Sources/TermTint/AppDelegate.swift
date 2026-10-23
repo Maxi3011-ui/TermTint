@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switcher.onToggleMinimize = { [engine] ref in engine.toggleMinimize(ref) }
         switcher.onToggleFreeze = { [engine] ref in engine.toggleFreeze(ref) }
         switcher.onRestoreAll = { [engine] in engine.restoreAllMinimized() }
+        switcher.onMinimizeFrozen = { [engine] in engine.minimizeAllFrozen() }
         switcher.onApplyPending = { [engine] in engine.applyPendingWindowStates() }
 
         if AXIsProcessTrusted() {

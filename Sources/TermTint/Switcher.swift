@@ -37,6 +37,8 @@ final class Switcher {
     var onToggleFreeze: ((WindowRef) -> Void)?
     /// Brings every minimised window back.
     var onRestoreAll: (() -> Void)?
+    /// Puts every paused window into the Dock.
+    var onMinimizeFrozen: (() -> Void)?
     /// Called once the overview is closed, so window changes are applied while
     /// no modifier key is held.
     var onApplyPending: (() -> Void)?
@@ -61,6 +63,13 @@ final class Switcher {
         view.onDotClick = { [weak self] index in self?.toggleMinimize(index) }
         view.onFreezeClick = { [weak self] index in self?.toggleFreeze(index) }
         view.onRestoreAll = { [weak self] in self?.restoreAll() }
+        view.onMinimizeFrozen = { [weak self] in self?.minimizeFrozen() }
+    }
+
+    private func minimizeFrozen() {
+        guard isShowing else { return }
+        onMinimizeFrozen?()
+        refreshEntries()
     }
 
     private func restoreAll() {
@@ -92,6 +101,7 @@ final class Switcher {
         selection = min(selection, entries.count - 1)
         view.configure(entries: entries, selected: selection)
         view.setMinimizedCount(entries.filter(\.isMinimized).count)
+        view.setFrozenCount(entries.filter { $0.isFrozen && !$0.isMinimized }.count)
         view.needsDisplay = true
     }
 
@@ -155,6 +165,7 @@ final class Switcher {
 
         view.configure(entries: entries, selected: selection)
         view.setMinimizedCount(entries.filter(\.isMinimized).count)
+        view.setFrozenCount(entries.filter { $0.isFrozen && !$0.isMinimized }.count)
         view.setOverlayEnabled(isOverlayEnabled?() ?? true)
         panel.present(size: view.fittingSize)
 
@@ -248,6 +259,9 @@ final class Switcher {
             let left = Self.roleOrder.firstIndex(of: lhs.role) ?? Self.roleOrder.count
             let right = Self.roleOrder.firstIndex(of: rhs.role) ?? Self.roleOrder.count
             if left != right { return left < right }
+            // Parked sessions sink to the bottom of their own family, so the
+            // ones still running stay together at the top where you look.
+            if lhs.isFrozen != rhs.isFrozen { return !lhs.isFrozen }
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
     }
@@ -343,6 +357,11 @@ final class SwitcherView: NSView {
         set { footer.onRestoreAll = newValue }
     }
 
+    var onMinimizeFrozen: (() -> Void)? {
+        get { footer.onMinimizeFrozen }
+        set { footer.onMinimizeFrozen = newValue }
+    }
+
     private let effect = NSVisualEffectView()
     private let scrim = NSView()
     private let rows = RowsView()
@@ -397,6 +416,10 @@ final class SwitcherView: NSView {
         footer.setMinimizedCount(count)
     }
 
+    func setFrozenCount(_ count: Int) {
+        footer.setFrozenCount(count)
+    }
+
     override var fittingSize: CGSize {
         CGSize(width: Metrics.width,
                height: rows.contentHeight + Metrics.padding * 2 + Metrics.footerHeight)
@@ -422,14 +445,17 @@ final class SwitcherView: NSView {
 
         var onToggle: (() -> Void)?
         var onRestoreAll: (() -> Void)?
+        var onMinimizeFrozen: (() -> Void)?
 
         private var isOn = true
         private var minimizedCount = 0
+        /// Frozen and still on screen — the ones the button can put away.
+        private var frozenCount = 0
         private var tracking: NSTrackingArea?
 
         /// The footer holds two different things — an action on the left and a
         /// setting on the right — so the pointer has to say which one it means.
-        private enum Zone { case none, restore, toggle }
+        private enum Zone { case none, restore, freeze, toggle }
         private var hotZone: Zone = .none
 
         /// Animatable through the AppKit animator proxy, which needs both the
@@ -465,6 +491,12 @@ final class SwitcherView: NSView {
             needsDisplay = true
         }
 
+        func setFrozenCount(_ count: Int) {
+            guard count != frozenCount else { return }
+            frozenCount = count
+            needsDisplay = true
+        }
+
         private var restoreTitle: String {
             minimizedCount > 1 ? "Alle einblenden (\(minimizedCount))" : "Alle einblenden"
         }
@@ -473,9 +505,44 @@ final class SwitcherView: NSView {
 
         private var restoreRect: CGRect {
             guard minimizedCount > 0 else { return .zero }
-            let width = ceil((restoreTitle as NSString)
-                .size(withAttributes: [.font: restoreFont]).width) + 26
-            return CGRect(x: Metrics.padding + 3, y: bounds.midY - 14, width: width, height: 28)
+            return CGRect(x: Metrics.padding + 3, y: bounds.midY - 14,
+                          width: pillWidth(for: restoreTitle), height: 28)
+        }
+
+        private var freezeTitleLong: String {
+            frozenCount > 1 ? "Eingefrorene minimieren (\(frozenCount))" : "Eingefrorene minimieren"
+        }
+
+        /// Where the left-hand buttons end: the right-hand group owns
+        /// everything past this, and the two must never meet.
+        private var leftLimit: CGFloat {
+            let switchX = bounds.maxX - Metrics.padding - 15 - Switch.width
+            return switchX - 82 - 98 - 18
+        }
+
+        private func pillWidth(for title: String, glyph: Bool = false) -> CGFloat {
+            ceil((title as NSString).size(withAttributes: [.font: restoreFont]).width)
+                + 26 + (glyph ? 20 : 0)
+        }
+
+        /// Both buttons rarely show at once — minimising the frozen ones turns
+        /// them into restorable ones. When it does happen there is no room for
+        /// two full labels, so this one shrinks to a snowflake and a count.
+        private var freezeIsCompact: Bool {
+            guard minimizedCount > 0 else { return false }
+            let start = restoreRect.maxX + 8
+            return start + pillWidth(for: freezeTitleLong) > leftLimit
+        }
+
+        private var freezeTitle: String {
+            freezeIsCompact ? "\(frozenCount)" : freezeTitleLong
+        }
+
+        private var freezeRect: CGRect {
+            guard frozenCount > 0 else { return .zero }
+            let start = minimizedCount > 0 ? restoreRect.maxX + 8 : Metrics.padding + 3
+            return CGRect(x: start, y: bounds.midY - 14,
+                          width: pillWidth(for: freezeTitle, glyph: true), height: 28)
         }
 
         // MARK: - Pointer
@@ -510,13 +577,17 @@ final class SwitcherView: NSView {
             let point = convert(event.locationInWindow, from: nil)
             if minimizedCount > 0, restoreRect.contains(point) {
                 onRestoreAll?()
+            } else if frozenCount > 0, freezeRect.contains(point) {
+                onMinimizeFrozen?()
             } else {
                 onToggle?()
             }
         }
 
         private func updateZone(_ point: CGPoint) {
-            setZone(minimizedCount > 0 && restoreRect.contains(point) ? .restore : .toggle)
+            if minimizedCount > 0, restoreRect.contains(point) { setZone(.restore); return }
+            if frozenCount > 0, freezeRect.contains(point) { setZone(.freeze); return }
+            setZone(.toggle)
         }
 
         private func setZone(_ zone: Zone) {
@@ -549,6 +620,7 @@ final class SwitcherView: NSView {
 
             drawRight(labelRect: labelRect, stateRect: stateRect, switchX: switchX)
             drawRestoreButton()
+            drawFreezeButton()
         }
 
         private func drawRight(labelRect: CGRect, stateRect: CGRect, switchX: CGFloat) {
@@ -605,6 +677,40 @@ final class SwitcherView: NSView {
                 .paragraphStyle: centred,
             ]).draw(with: CGRect(x: rect.minX, y: rect.midY - 8,
                                  width: rect.width, height: 16),
+                    options: [.usesLineFragmentOrigin])
+        }
+
+        /// Puts every paused session into the Dock in one go — the point of
+        /// freezing a window is usually that you want it out of the way.
+        private func drawFreezeButton() {
+            guard frozenCount > 0 else { return }
+            let rect = freezeRect
+            let hot = hotZone == .freeze
+
+            FreezeButtonPanel.lilac.withAlphaComponent(hot ? 0.34 : 0.20).setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 9, yRadius: 9).fill()
+
+            let colour = NSColor(white: 1, alpha: hot ? 0.95 : 0.72)
+            var textLeft = rect.minX + 13
+
+            if let symbol = NSImage(systemSymbolName: "snowflake", accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: 12, weight: .semibold)) {
+                let glyph = NSImage(size: symbol.size, flipped: false) { bounds in
+                    symbol.draw(in: bounds)
+                    colour.set()
+                    bounds.fill(using: .sourceAtop)
+                    return true
+                }
+                glyph.draw(in: CGRect(x: textLeft, y: rect.midY - symbol.size.height / 2,
+                                      width: symbol.size.width, height: symbol.size.height))
+                textLeft += symbol.size.width + 6
+            }
+
+            NSAttributedString(string: freezeTitle, attributes: [
+                .font: restoreFont,
+                .foregroundColor: colour,
+            ]).draw(with: CGRect(x: textLeft, y: rect.midY - 8,
+                                 width: rect.maxX - textLeft, height: 16),
                     options: [.usesLineFragmentOrigin])
         }
     }

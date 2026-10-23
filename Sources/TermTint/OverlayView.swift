@@ -37,7 +37,11 @@ final class OverlayView: NSView, NSTextFieldDelegate {
     private var maskCache: (bounds: CGRect, occluders: [CGRect], body: CGRect)?
 
     private enum Metrics {
-        static let corner: CGFloat = 12
+        /// Measured off a real Terminal window on macOS 26: the rounding runs
+        /// 16 points deep and follows a plain circular arc. Matching it matters
+        /// — the overlay used to be the squarer of the two, so a hard little
+        /// wedge of colour stuck out past each corner of the window.
+        static let corner: CGFloat = 16
         static let pillPaddingX: CGFloat = 26
         static let pillPaddingY: CGFloat = 12
         static let gap: CGFloat = 12
@@ -61,7 +65,7 @@ final class OverlayView: NSView, NSTextFieldDelegate {
     private func build() {
         wantsLayer = true
         layer?.cornerRadius = Metrics.corner
-        layer?.cornerCurve = .continuous
+        layer?.cornerCurve = .circular
         layer?.masksToBounds = true
         layer?.borderWidth = 1
 

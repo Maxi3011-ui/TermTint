@@ -213,6 +213,19 @@ final class HoverEngine {
         }
     }
 
+    /// Puts every paused session into the Dock. Deferred like every other
+    /// minimise: ⌥ is still held while the overview is open, and that is
+    /// macOS's own "minimise everything" gesture.
+    func minimizeAllFrozen() {
+        for ref in Array(states.keys) {
+            guard let state = states[ref], !state.isMinimized,
+                  freezer.isFrozen(state.tty) else { continue }
+            Log.write("Vorgemerkt: \(state.displayName) -> minimieren (eingefroren)")
+            pendingMinimize[ref] = true
+            states[ref]?.isMinimized = true
+        }
+    }
+
     /// Runs once the overview is gone *and* ⌥ is actually released — closing
     /// with Escape leaves the key down, and applying then would trigger the
     /// system's minimise-everything gesture again.
