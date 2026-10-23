@@ -29,9 +29,14 @@ enum LabelStore {
     static func windowKey(_ id: Int) -> String { "win:\(id)" }
 
     /// Best-effort identity, valid across a restart of Terminal.
+    /// Returns nil unless the session name actually identifies the session.
+    /// A key built from the running program instead — `zsh`, `claude` — is
+    /// shared by every window in the same folder, and they then inherit each
+    /// other's name, mark and place. See KeyHygiene.
     static func pathKey(directory: String?, autoName: String) -> String? {
-        guard let directory, !directory.isEmpty else { return nil }
-        return "dir:" + (autoName.isEmpty ? directory : directory + "\n" + autoName)
+        guard let directory, !directory.isEmpty,
+              !KeyHygiene.isGeneric(autoName) else { return nil }
+        return "dir:" + directory + "\n" + autoName
     }
 
     static func label(for key: String) -> Label? {
@@ -47,6 +52,18 @@ enum LabelStore {
             store = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
         }
         write(store)
+    }
+
+    /// Throws out every entry the test accepts. The store is kept as one JSON
+    /// blob, so it cannot be weeded through UserDefaults directly.
+    @discardableResult
+    static func prune(_ shouldDrop: (String) -> Bool) -> Int {
+        var store = all()
+        let dropped = store.keys.filter(shouldDrop)
+        guard !dropped.isEmpty else { return 0 }
+        for key in dropped { store.removeValue(forKey: key) }
+        write(store)
+        return dropped.count
     }
 
     static func forget(_ keys: [String]) {

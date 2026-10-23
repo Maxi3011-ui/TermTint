@@ -136,6 +136,12 @@ final class HoverEngine {
             guard let self, let hovered = self.hovered else { return }
             self.toggleMark(hovered)
         }
+        // Every window Terminal still has, minimised ones included — the
+        // on-screen listing alone would declare parked windows dead.
+        let live = Set(((CGWindowListCopyWindowInfo([.excludeDesktopElements], kCGNullWindowID)
+                         as? [[String: Any]]) ?? [])
+            .compactMap { $0[kCGWindowNumber as String] as? Int })
+        KeyHygiene.prune(liveWindowIDs: live)
         watcher.onEvent = { [weak self] event in self?.handle(event) }
         watcher.start()
         refreshWindows()
@@ -1234,11 +1240,13 @@ final class HoverEngine {
             states[ref]?.tty = tty
             if freezer.isFrozen(tty) { states[ref]?.activity.freeze() }
         }
-        // Frozen sessions whose window is gone would hang around forever.
-        let open = Set(ttys.values)
-        if !ttys.isEmpty {
-            for tty in freezer.frozen.keys where !open.contains(tty) { freezer.thaw(tty) }
-        }
+        // Deliberately no thawing here any more. This used to let go of every
+        // session whose tty was not in the list, and the list is not reliable:
+        // a window with several tabs only reports the selected one, and a
+        // window parked in Stage Manager may not be reported at all. A session
+        // Maxi had frozen on purpose then quietly started running again —
+        // which is exactly what happened. Entries whose processes are really
+        // gone are already dropped when the Freezer is built.
         refreshAttachments()
     }
 
