@@ -27,6 +27,9 @@ struct Activity {
     private var announced = true
 
     var isWorking = false
+    /// Paused with SIGSTOP. A frozen session writes nothing, so without this
+    /// it would look finished after the quiet threshold and get announced.
+    private(set) var isFrozen = false
     var finishedAt: Date?
     /// Set when a window stops working, cleared once you have looked at it.
     var hasUnseenResult = false
@@ -37,6 +40,7 @@ struct Activity {
 
     /// - Returns: true when the window just started working.
     mutating func noteMarker(_ new: String?, now: Date = Date()) -> Bool {
+        guard !isFrozen else { return false }
         guard new != marker || !hasSeenMarker else { return false }
         let isFirst = !hasSeenMarker
         hasSeenMarker = true
@@ -58,11 +62,25 @@ struct Activity {
     /// Call regularly while something is working. Returns true when this
     /// window has just finished, for display purposes.
     mutating func refresh(now: Date = Date()) -> Bool {
-        guard isWorking, now.timeIntervalSince(markerChangedAt) >= Self.workingWindow else { return false }
+        guard isWorking, !isFrozen, now.timeIntervalSince(markerChangedAt) >= Self.workingWindow else { return false }
         isWorking = false
         finishedAt = markerChangedAt
         hasUnseenResult = true
         return true
+    }
+
+    /// Drops any pending announcement — freezing is not finishing.
+    mutating func freeze() {
+        isFrozen = true
+        isWorking = false
+        announced = true
+    }
+
+    /// Back to normal without announcing anything after the fact. The next
+    /// spinner change starts a fresh round of work.
+    mutating func thaw(now: Date = Date()) {
+        isFrozen = false
+        markerChangedAt = now
     }
 
     /// How long to keep waiting for a session to go quiet before giving up.
@@ -74,7 +92,7 @@ struct Activity {
     /// long steps too, which is what made announcements fire too early.
     mutating func claimAnnouncement(liveness: SessionLog.Liveness,
                                     now: Date = Date()) -> Bool {
-        guard !announced, !isWorking, let finishedAt else { return false }
+        guard !announced, !isWorking, !isFrozen, let finishedAt else { return false }
         // Cheap gate first: no point touching files while the spinner still
         // turned a moment ago.
         guard now.timeIntervalSince(markerChangedAt) >= Self.settleWindow else { return false }
@@ -108,6 +126,7 @@ struct Activity {
 
     /// Short, glanceable state — "arbeitet", "fertig vor 4 Min.".
     var text: String {
+        if isFrozen { return "eingefroren" }
         if isWorking { return "arbeitet" }
         guard let finishedAt else { return "" }
         return "fertig " + Self.relative(to: finishedAt)

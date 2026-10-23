@@ -33,6 +33,8 @@ final class HoverEngine {
         var tint: Tint
         /// Set by a click, cleared when the pointer leaves and comes back.
         var dismissed: Bool = false
+        /// The session's tty, looked up when it is first needed for freezing.
+        var tty: String?
 
         var displayName: String { manualName ?? autoName }
 
@@ -69,6 +71,9 @@ final class HoverEngine {
     private let herald = Herald()
     private let sessionLog = SessionLog()
     private let panel = OverlayPanel()
+    private let freezer = Freezer()
+    private let freezeButton = FreezeButtonPanel()
+    private var veils: [WindowRef: FreezeVeil] = [:]
 
     private var states: [WindowRef: WindowState] = [:]
     private var hovered: WindowRef?
@@ -104,9 +109,14 @@ final class HoverEngine {
         panel.overlay.onEndEditing = { [weak self] in self?.finishEditing(saving: nil) }
 
         herald.onSelect = { [weak self] ref in self?.activate(ref) }
+        freezeButton.onClick = { [weak self] in
+            guard let self, let hovered = self.hovered else { return }
+            self.toggleFreeze(hovered)
+        }
         watcher.onEvent = { [weak self] event in self?.handle(event) }
         watcher.start()
         refreshWindows()
+        restoreFrozen()
         installMonitors()
 
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -286,6 +296,7 @@ final class HoverEngine {
             if ref == hovered { panel.place(at: frame) }
             pointerMoved()
             updateOcclusion()
+            updateVeils()
 
         case .titleChanged(let ref):
             guard states[ref] != nil else { return }
@@ -360,6 +371,7 @@ final class HoverEngine {
                 }
                 continue
             }
+            if let tty = states[ref]?.tty, freezer.isFrozen(tty) { freezer.thaw(tty) }
             states.removeValue(forKey: ref)
             if ref == editing { panel.overlay.cancelEditing() }
             if ref == hovered {
@@ -371,6 +383,7 @@ final class HoverEngine {
 
         invalidateWindowList()
         pointerMoved(force: true)
+        updateVeils()
     }
 
     /// Retries a failed or suspiciously empty window query a few times, then
@@ -397,6 +410,7 @@ final class HoverEngine {
         invalidateWindowList()
         pointerMoved(force: true)
         updateOcclusion()
+        updateVeils()
     }
 
     @objc private func screensChanged() {
@@ -605,6 +619,7 @@ final class HoverEngine {
             self.pendingHide = nil
             guard self.hovered == nil else { return }
             Log.write("  ausblenden: Zeiger hat alle Fenster verlassen")
+            self.freezeButton.hide()
             self.panel.fadeOut()
         }
         pendingHide = work
@@ -614,6 +629,7 @@ final class HoverEngine {
     /// Hides at once and drops any pending grace period.
     private func hideNow() {
         cancelHide()
+        freezeButton.hide()
         panel.hideImmediately()
     }
 
@@ -631,6 +647,7 @@ final class HoverEngine {
     private func show(_ ref: WindowRef, _ state: WindowState) {
         guard !state.dismissed else {
             Log.write("  ausblenden: Fenster ist abgewählt")
+            freezeButton.hide()
             panel.fadeOut()
             return
         }
@@ -645,12 +662,21 @@ final class HoverEngine {
         panel.overlay.setOcclusion(occluders(for: state.frame))
         panel.overlay.layoutSubtreeIfNeeded()
         panel.fadeIn()
+        placeFreezeButton(for: state)
+    }
+
+    private func placeFreezeButton(for state: WindowState) {
+        let slot = panel.overlay.freezeSlot
+        guard slot != .zero, editing == nil else { freezeButton.hide(); return }
+        freezeButton.show(at: slot.offsetBy(dx: panel.frame.minX, dy: panel.frame.minY),
+                          frozen: freezer.isFrozen(state.tty), tint: state.tint)
     }
 
     private func updateOcclusion() {
         guard let hovered, let state = states[hovered], !state.dismissed else { return }
         panel.overlay.setOcclusion(occluders(for: state.frame))
         panel.overlay.layoutSubtreeIfNeeded()
+        placeFreezeButton(for: state)
     }
 
     /// Areas of the hovered window covered by windows in front of it, in the
@@ -708,6 +734,8 @@ final class HoverEngine {
 
         if nameWasHit() {
             beginEditing(hovered)
+        } else if freezer.isFrozen(states[hovered]?.tty) {
+            return
         } else {
             states[hovered]?.dismissed = true
             hideNow()
@@ -743,6 +771,7 @@ final class HoverEngine {
     private func beginEditing(_ ref: WindowRef) {
         guard states[ref] != nil else { return }
         editing = ref
+        freezeButton.hide()
         previousApp = NSWorkspace.shared.frontmostApplication
 
         panel.ignoresMouseEvents = false
@@ -816,6 +845,82 @@ final class HoverEngine {
     var renameSessionsEnabled: Bool {
         get { UserDefaults.standard.object(forKey: "renameSessions") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "renameSessions") }
+    }
+
+    // MARK: - Freezing
+
+    var frozenCount: Int { freezer.count }
+
+    func thawAll() {
+        freezer.thawAll()
+        for ref in Array(states.keys) where states[ref]?.activity.isFrozen == true {
+            states[ref]?.activity.thaw()
+        }
+        updateVeils()
+        redrawHovered()
+    }
+
+    private func toggleFreeze(_ ref: WindowRef) {
+        guard var state = states[ref] else { return }
+        if state.windowID == nil { state.windowID = windowID(matching: state.frame) }
+        // Tabs can be switched, so the tty is looked up fresh on every click.
+        guard let id = state.windowID, let tty = Freezer.ttys()[id] else {
+            Log.write("Einfrieren: kein tty für das Fenster gefunden")
+            NSSound.beep()
+            return
+        }
+        state.tty = tty
+        if freezer.isFrozen(tty) {
+            freezer.thaw(tty)
+            state.activity.thaw()
+        } else {
+            freezer.freeze(tty)
+            if freezer.isFrozen(tty) { state.activity.freeze() }
+        }
+        states[ref] = state
+        updateVeils()
+        redrawHovered()
+    }
+
+    /// Sessions TermTint froze before it was restarted stay frozen — find
+    /// their windows again so they keep their veil and button state.
+    private func restoreFrozen() {
+        guard freezer.count > 0 else { return }
+        let ttys = Freezer.ttys()
+        for ref in Array(states.keys) {
+            guard let id = states[ref]?.windowID ?? states[ref].flatMap({ windowID(matching: $0.frame) }),
+                  let tty = ttys[id] else { continue }
+            states[ref]?.windowID = id
+            states[ref]?.tty = tty
+            if freezer.isFrozen(tty) { states[ref]?.activity.freeze() }
+        }
+        // Frozen sessions whose window is gone would hang around forever.
+        let open = Set(ttys.values)
+        if !ttys.isEmpty {
+            for tty in freezer.frozen.keys where !open.contains(tty) { freezer.thaw(tty) }
+        }
+        updateVeils()
+    }
+
+    /// Driven by the same events as everything else: list, focus, geometry
+    /// and app changes. Stacking each veil right above its own window keeps it
+    /// below whatever lies on top of that window.
+    private func updateVeils() {
+        for (ref, state) in states {
+            let frozen = freezer.isFrozen(state.tty)
+            guard frozen, state.isOnScreen, !state.isMinimized, let id = state.windowID else {
+                veils[ref]?.hide()
+                if !frozen { veils[ref] = nil }
+                continue
+            }
+            let veil = veils[ref] ?? FreezeVeil()
+            veils[ref] = veil
+            veil.show(over: state.frame, titleBarHeight: state.titleBarHeight, windowID: id)
+        }
+        for ref in veils.keys where states[ref] == nil {
+            veils[ref]?.hide()
+            veils[ref] = nil
+        }
     }
 
     // MARK: - Hit testing

@@ -55,6 +55,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         announce.state = engine.announcementsEnabled ? .on : .off
         menu.addItem(announce)
 
+        let thaw = NSMenuItem(title: engine.frozenCount == 0 ? "Keine Sitzung eingefroren"
+                                                             : "Alle auftauen (\(engine.frozenCount))",
+                              action: #selector(thawAll), keyEquivalent: "")
+        thaw.target = self
+        thaw.isEnabled = engine.frozenCount > 0
+        menu.addItem(thaw)
+
         let clear = NSMenuItem(title: "Alle Namen löschen", action: #selector(clearNames), keyEquivalent: "")
         clear.target = self
         clear.isEnabled = engine.windowCount > 0
@@ -92,6 +99,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func toggleAnnouncements() {
         engine.announcementsEnabled = !engine.announcementsEnabled
+    }
+
+    @objc private func thawAll() {
+        engine.thawAll()
     }
 
     @objc private func clearNames() {

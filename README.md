@@ -59,6 +59,24 @@ Klick irgendwo auf die Zeile oder Leertaste schaltet um; die Übersicht bleibt
 dabei offen, damit man den Schalter umspringen sieht — und weil sie auch der Weg
 zurück ist: das ⌥Tab-Fenster funktioniert weiter, wenn das Overlay pausiert.
 
+## Einfrieren
+
+Unter dem Namen im Overlay sitzt ein lila Knopf **Einfrieren**. Er hält die
+ganze Sitzung des Fensters an (SIGSTOP): sie verbraucht keine Rechenzeit mehr,
+ihren Speicher lagert macOS bei Bedarf aus. Das Fenster bekommt einen
+Milchglas-Schleier „Eingefroren“. **Auftauen** lässt alles genau dort
+weiterlaufen, wo es stand.
+
+- Reihenfolge ist entscheidend: erst die Shell, dann ihre Kinder anhalten;
+  beim Auftauen umgekehrt. Hält man nur das Programm an, übernimmt zsh das
+  Terminal und der Job ist kaputt.
+- Eine eingefrorene Sitzung schreibt nichts mehr in ihre Sitzungsdatei.
+  `Activity.freeze()` unterdrückt deshalb die Fertig-Meldung; Auftauen meldet
+  nichts nachträglich.
+- Die Zuordnung Fenster → tty kommt per AppleScript, nur beim Klick.
+- Beim Beenden von TermTint und beim Schließen eines eingefrorenen Fensters
+  wird automatisch aufgetaut. Im Menü: „Alle auftauen“.
+
 ## Installation
 
 ```

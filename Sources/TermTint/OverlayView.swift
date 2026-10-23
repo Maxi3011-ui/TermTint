@@ -167,6 +167,11 @@ final class OverlayView: NSView, NSTextFieldDelegate {
     /// Pill around the name, in this view's coordinates — the click target.
     var nameHitRect: CGRect { pill.frame }
 
+    /// Room under the caption for the freeze button, which lives in its own
+    /// clickable panel — this view never takes clicks.
+    private(set) var freezeSlot: CGRect = .zero
+    static let freezeSize = CGSize(width: 136, height: 30)
+
     // MARK: - Editing
 
     /// - Parameter prefill: text to start from. Automatic labels start empty so
@@ -273,7 +278,10 @@ final class OverlayView: NSView, NSTextFieldDelegate {
         let fieldWidth = isEditing ? available : min(max(measured, 60), available)
         let pillTextWidth = isEditing ? max(measured, Metrics.minEditWidth) : measured
 
-        let blockHeight = fieldHeight + (captionHeight > 0 ? Metrics.gap + captionHeight : 0)
+        // The freeze button only gets room where there is enough of it.
+        let showsFreeze = !isEditing && content.height > 190
+        let freezeRoom = showsFreeze ? Metrics.gap + 4 + Self.freezeSize.height : 0
+        let blockHeight = fieldHeight + (captionHeight > 0 ? Metrics.gap + captionHeight : 0) + freezeRoom
         let blockTop = content.midY + blockHeight / 2
 
         // The pencil gets its own room on the right instead of sitting on top
@@ -304,6 +312,13 @@ final class OverlayView: NSView, NSTextFieldDelegate {
                                y: field.frame.minY - Metrics.gap - captionHeight,
                                width: max(40, content.width - 32),
                                height: captionHeight)
+
+        let above = captionHeight > 0 ? caption.frame.minY : pill.frame.minY
+        freezeSlot = showsFreeze
+            ? CGRect(x: content.midX - Self.freezeSize.width / 2,
+                     y: above - Metrics.gap - 4 - Self.freezeSize.height,
+                     width: Self.freezeSize.width, height: Self.freezeSize.height)
+            : .zero
     }
 
     private func layoutEmblem(in content: CGRect) {

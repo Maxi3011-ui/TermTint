@@ -35,6 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         permissionCheck?.invalidate()
+        // Never leave a session stopped behind with nobody to wake it.
+        engine.thawAll()
     }
 
     /// The only timer in the app, and it stops the moment access is granted.
