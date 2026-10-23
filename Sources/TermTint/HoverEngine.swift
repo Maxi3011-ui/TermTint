@@ -78,7 +78,17 @@ final class HoverEngine {
     private let markButton = MarkButtonPanel()
     /// What each window looked like before an arrangement was applied, so the
     /// same button can undo it.
-    private var snapshots: [Arrangement: [WindowRef: CGRect]] = [:]
+    private var snapshots: [Arrangement: Snapshot] = [:]
+    /// True while an arrangement is being applied or taken back, so our own
+    /// window moves are not mistaken for someone grabbing a window.
+    private var isArranging = false
+
+    /// What an arrangement replaced, and what it put there — the second half
+    /// is what tells us later whether anybody has disturbed it.
+    private struct Snapshot {
+        var before: [WindowRef: CGRect]
+        var applied: [WindowRef: CGRect] = [:]
+    }
     /// Runs only while a veil or a mark dot is on screen.
     private var attachmentTicker: Timer?
     private var markDots: [WindowRef: MarkDot] = [:]
@@ -332,6 +342,7 @@ final class HoverEngine {
 
         case .geometryChanged(let ref):
             guard let frame = watcher.frame(of: ref) else { refreshWindows(); return }
+            noteDisturbance(ref, frame: frame)
             states[ref]?.frame = frame
             invalidateWindowList()
             if ref == hovered { panel.place(at: frame) }
@@ -425,6 +436,7 @@ final class HoverEngine {
         invalidateWindowList()
         pointerMoved(force: true)
         refreshAttachments()
+        checkArrangementIntact()
     }
 
     /// Retries a failed or suspiciously empty window query a few times, then
@@ -1004,6 +1016,43 @@ final class HoverEngine {
         return known.sorted { $0.1 < $1.1 }.map(\.0)
     }
 
+    /// Someone moved or resized a window that belongs to a live arrangement.
+    ///
+    /// The two arrangements want different things here. "Everything on one
+    /// screen" is a single picture: break one piece out of it and the picture
+    /// is gone, so all of it goes back. Bringing the marked ones forward is
+    /// not a picture but a move — dragging one window afterwards is normal,
+    /// and the only thing that has to go is the offer to undo, so that the
+    /// next press arranges again instead of asking to take something back.
+    private func noteDisturbance(_ ref: WindowRef, frame: CGRect) {
+        guard !isArranging, !snapshots.isEmpty else { return }
+        for (kind, snapshot) in snapshots {
+            guard let expected = snapshot.applied[ref],
+                  !expected.isClose(to: frame, within: 12) else { continue }
+            if kind == .tileAll {
+                Log.write("Anordnung aufgebrochen – alles zurück")
+                undo(.tileAll)
+            } else {
+                Log.write("Anordnung aufgebrochen – Rücknahme verfällt")
+                snapshots.removeValue(forKey: kind)
+            }
+            return
+        }
+    }
+
+    /// A window of the big arrangement went away — closed, minimised or off
+    /// to another desk. Same rule: the picture is broken, so it is taken back.
+    private func checkArrangementIntact() {
+        guard !isArranging, let snapshot = snapshots[.tileAll], !snapshot.applied.isEmpty else { return }
+        let gone = snapshot.before.keys.contains { ref in
+            guard let state = states[ref] else { return true }
+            return !state.isOnScreen || state.isMinimized
+        }
+        guard gone else { return }
+        Log.write("Fenster aus der Anordnung verschwunden – alles zurück")
+        undo(.tileAll)
+    }
+
     /// Forgets every remembered place, so the next arrangement starts fresh.
     func clearSlots() {
         SlotStore.clear()
@@ -1019,12 +1068,40 @@ final class HoverEngine {
     private func remember(_ kind: Arrangement, _ refs: [WindowRef]) {
         var frames: [WindowRef: CGRect] = [:]
         for ref in refs { frames[ref] = states[ref]?.frame }
-        snapshots = [kind: frames]
+        snapshots = [kind: Snapshot(before: frames)]
+        isArranging = true
+    }
+
+    /// Reads back where the windows actually ended up. Terminal rounds sizes
+    /// to whole character cells, so what we asked for and what we got differ
+    /// by a few points — comparing against the real frames is what makes it
+    /// possible to tell a hand-dragged window from that rounding.
+    private func recordApplied(_ kind: Arrangement) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self, var snapshot = self.snapshots[kind] else {
+                self?.isArranging = false
+                return
+            }
+            for ref in snapshot.before.keys {
+                guard let frame = self.watcher.frame(of: ref) else { continue }
+                snapshot.applied[ref] = frame
+                self.states[ref]?.frame = frame
+            }
+            self.snapshots[kind] = snapshot
+            self.isArranging = false
+        }
     }
 
     /// Puts the windows back and forgets the arrangement.
     private func undo(_ kind: Arrangement) {
-        guard let frames = snapshots.removeValue(forKey: kind) else { return }
+        guard let snapshot = snapshots.removeValue(forKey: kind) else { return }
+        isArranging = true
+        defer {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.isArranging = false
+            }
+        }
+        let frames = snapshot.before
         for (ref, frame) in frames where states[ref] != nil {
             watcher.setFrame(frame, for: ref)
             states[ref]?.frame = frame
@@ -1057,6 +1134,7 @@ final class HoverEngine {
             states[ref]?.frame = frames[index]
         }
         Log.write("Markierte angeordnet: \(ordered.count) auf \(Int(area.width))x\(Int(area.height))")
+        recordApplied(.tileMarked)
         refreshAttachments()
     }
 
@@ -1077,6 +1155,7 @@ final class HoverEngine {
             states[ref]?.frame = frames[index]
         }
         Log.write("Alle angeordnet: \(ordered.count) auf \(Int(area.width))x\(Int(area.height))")
+        recordApplied(.tileAll)
         refreshAttachments()
     }
 
@@ -1114,8 +1193,7 @@ final class HoverEngine {
             return
         }
         Log.write("Standardgröße gesetzt (\(answer ?? "?")) für \(visible.count) Fenster")
-        // The frames we hold are stale now; let the watcher tell us the truth.
-        refreshWindows()
+        recordApplied(.defaultSize)
     }
 
     /// The screen you are looking at, which is the one the pointer is on.
