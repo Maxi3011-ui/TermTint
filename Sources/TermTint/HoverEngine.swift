@@ -181,7 +181,8 @@ final class HoverEngine {
                            // The attribute is authoritative and immediate;
                            // waiting for our own bookkeeping to catch up only
                            // adds a race.
-                           isMinimized: state.isMinimized)
+                           isMinimized: state.isMinimized,
+                           isFrozen: freezer.isFrozen(state.tty))
         }
     }
 
@@ -860,7 +861,9 @@ final class HoverEngine {
         redrawHovered()
     }
 
-    private func toggleFreeze(_ ref: WindowRef) {
+    /// Pauses a session or lets it run on. Reached from the button in the
+    /// overlay and from the one in each row of the ⌥Tab overview.
+    func toggleFreeze(_ ref: WindowRef) {
         guard var state = states[ref] else { return }
         if state.windowID == nil { state.windowID = windowID(matching: state.frame) }
         // Tabs can be switched, so the tty is looked up fresh on every click.

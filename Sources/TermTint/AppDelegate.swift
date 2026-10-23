@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switcher.isOverlayEnabled = { [engine] in engine.isEnabled }
         switcher.setOverlayEnabled = { [engine] enabled in engine.setEnabled(enabled) }
         switcher.onToggleMinimize = { [engine] ref in engine.toggleMinimize(ref) }
+        switcher.onToggleFreeze = { [engine] ref in engine.toggleFreeze(ref) }
         switcher.onRestoreAll = { [engine] in engine.restoreAllMinimized() }
         switcher.onApplyPending = { [engine] in engine.applyPendingWindowStates() }
 

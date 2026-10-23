@@ -20,6 +20,8 @@ final class Switcher {
         let isUnseen: Bool
         /// Sitting in the Dock — still listed, so old projects stay findable.
         let isMinimized: Bool
+        /// Paused with SIGSTOP — the row button thaws it again.
+        let isFrozen: Bool
     }
 
     var entriesProvider: (() -> [Entry])?
@@ -31,6 +33,8 @@ final class Switcher {
     var setOverlayEnabled: ((Bool) -> Void)?
     /// Clicking a row's colour dot puts that window away or brings it back.
     var onToggleMinimize: ((WindowRef) -> Void)?
+    /// Clicking a row's freeze button pauses that session or lets it run on.
+    var onToggleFreeze: ((WindowRef) -> Void)?
     /// Brings every minimised window back.
     var onRestoreAll: (() -> Void)?
     /// Called once the overview is closed, so window changes are applied while
@@ -55,12 +59,23 @@ final class Switcher {
         view.onClick = { [weak self] index in self?.click(index) }
         view.onToggle = { [weak self] in self?.toggleOverlay() }
         view.onDotClick = { [weak self] index in self?.toggleMinimize(index) }
+        view.onFreezeClick = { [weak self] index in self?.toggleFreeze(index) }
         view.onRestoreAll = { [weak self] in self?.restoreAll() }
     }
 
     private func restoreAll() {
         guard isShowing else { return }
         onRestoreAll?()
+        refreshEntries()
+    }
+
+    /// Unlike minimising, this is carried out at once: it signals a process
+    /// rather than asking Terminal to move a window, so ⌥ being held is
+    /// harmless.
+    private func toggleFreeze(_ index: Int) {
+        guard isShowing, entries.indices.contains(index) else { return }
+        onToggleFreeze?(entries[index].ref)
+        selection = index
         refreshEntries()
     }
 
@@ -317,6 +332,11 @@ final class SwitcherView: NSView {
     var onDotClick: ((Int) -> Void)? {
         get { rows.onDotClick }
         set { rows.onDotClick = newValue }
+    }
+
+    var onFreezeClick: ((Int) -> Void)? {
+        get { rows.onFreezeClick }
+        set { rows.onFreezeClick = newValue }
     }
     var onRestoreAll: (() -> Void)? {
         get { footer.onRestoreAll }
@@ -603,7 +623,9 @@ final class SwitcherView: NSView {
         var onHover: ((Int) -> Void)?
         var onClick: ((Int) -> Void)?
         var onDotClick: ((Int) -> Void)?
+        var onFreezeClick: ((Int) -> Void)?
         private var hotDot: Int?
+        private var hotFreeze: Int?
 
         override var isFlipped: Bool { true }
 
@@ -623,8 +645,10 @@ final class SwitcherView: NSView {
         override func mouseMoved(with event: NSEvent) {
             let point = convert(event.locationInWindow, from: nil)
             let overDot = dotIndex(at: point)
-            if overDot != hotDot {
+            let overFreeze = freezeIndex(at: point)
+            if overDot != hotDot || overFreeze != hotFreeze {
                 hotDot = overDot
+                hotFreeze = overFreeze
                 needsDisplay = true
             }
             guard let index = index(at: point) else { return }
@@ -632,8 +656,9 @@ final class SwitcherView: NSView {
         }
 
         override func mouseExited(with event: NSEvent) {
-            guard hotDot != nil else { return }
+            guard hotDot != nil || hotFreeze != nil else { return }
             hotDot = nil
+            hotFreeze = nil
             needsDisplay = true
         }
 
@@ -647,6 +672,10 @@ final class SwitcherView: NSView {
                 onDotClick?(dot)
                 return
             }
+            if let freeze = freezeIndex(at: point) {
+                onFreezeClick?(freeze)
+                return
+            }
             guard let index = index(at: point) else { return }
             onClick?(index)
         }
@@ -657,6 +686,17 @@ final class SwitcherView: NSView {
             guard let index = index(at: point), let row = rowFrame(for: index) else { return nil }
             let target = CGRect(x: row.minX + 6, y: row.midY - 14, width: 27, height: 28)
             return target.contains(point) ? index : nil
+        }
+
+        /// Where the freeze button sits in a row: hard right, so the eye
+        /// finds it in the same place in every line.
+        static func freezeFrame(in row: CGRect) -> CGRect {
+            CGRect(x: row.maxX - 12 - 22, y: row.midY - 11, width: 22, height: 22)
+        }
+
+        private func freezeIndex(at point: CGPoint) -> Int? {
+            guard let index = index(at: point), let row = rowFrame(for: index) else { return nil }
+            return Self.freezeFrame(in: row).insetBy(dx: -4, dy: -4).contains(point) ? index : nil
         }
 
         private func rowFrame(for index: Int) -> CGRect? {
@@ -780,7 +820,13 @@ final class SwitcherView: NSView {
                 NSBezierPath(ovalIn: dot).fill()
             }
 
+            // Drawn before any early return below, so every row keeps its
+            // button — including the ones with nothing to say on the right.
+            let freeze = Self.freezeFrame(in: row)
+            drawFreezeButton(in: freeze, frozen: entry.isFrozen, isHot: hotFreeze == entryIndex)
+
             let captionWidth: CGFloat = 168
+            let captionRight = freeze.minX - 8
             let nameStyle = NSMutableParagraphStyle()
             nameStyle.lineBreakMode = .byTruncatingTail
             let name = NSAttributedString(string: entry.name.isEmpty ? "Ohne Namen" : entry.name, attributes: [
@@ -789,8 +835,9 @@ final class SwitcherView: NSView {
                                           alpha: entry.name.isEmpty ? 0.45 : (entry.isMinimized ? 0.60 : 0.95)),
                 .paragraphStyle: nameStyle,
             ])
-            name.draw(with: CGRect(x: dot.maxX + 13, y: row.midY - 10,
-                                   width: row.width - 42 - captionWidth - 20, height: 20),
+            let nameLeft = dot.maxX + 13
+            name.draw(with: CGRect(x: nameLeft, y: row.midY - 10,
+                                   width: max(40, captionRight - captionWidth - 12 - nameLeft), height: 20),
                       options: [.usesLineFragmentOrigin])
 
             // Right column: what the session is doing beats what it is called.
@@ -811,7 +858,7 @@ final class SwitcherView: NSView {
                 .foregroundColor: colour,
                 .paragraphStyle: captionStyle,
             ])
-            let captionRect = CGRect(x: row.maxX - captionWidth - 16, y: row.midY - 8,
+            let captionRect = CGRect(x: captionRight - captionWidth, y: row.midY - 8,
                                      width: captionWidth, height: 18)
             caption.draw(with: captionRect, options: [.usesLineFragmentOrigin])
 
@@ -824,6 +871,35 @@ final class SwitcherView: NSView {
                 NSColor.systemOrange.setFill()
                 NSBezierPath(ovalIn: dot).fill()
             }
+        }
+
+        /// Quiet until you need it: a pale snowflake normally, the full lilac
+        /// of the overlay button once the session is actually paused.
+        private func drawFreezeButton(in rect: CGRect, frozen: Bool, isHot: Bool) {
+            if frozen {
+                FreezeButtonPanel.lilac.withAlphaComponent(isHot ? 0.95 : 0.80).setFill()
+                NSBezierPath(ovalIn: rect).fill()
+            } else if isHot {
+                NSColor(white: 1, alpha: 0.14).setFill()
+                NSBezierPath(ovalIn: rect).fill()
+            }
+
+            let name = frozen ? "play.fill" : "snowflake"
+            let colour: NSColor = frozen
+                ? NSColor(white: 1, alpha: 0.98)
+                : NSColor(white: 1, alpha: isHot ? 0.88 : 0.34)
+            guard let symbol = NSImage(systemSymbolName: name, accessibilityDescription: frozen ? "Auftauen" : "Einfrieren")?
+                .withSymbolConfiguration(.init(pointSize: 11.5, weight: .semibold))
+            else { return }
+            let glyph = NSImage(size: symbol.size, flipped: false) { bounds in
+                symbol.draw(in: bounds)
+                colour.set()
+                bounds.fill(using: .sourceAtop)
+                return true
+            }
+            let size = symbol.size
+            glyph.draw(in: CGRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2,
+                                  width: size.width, height: size.height))
         }
     }
 }

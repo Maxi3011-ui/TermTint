@@ -182,6 +182,10 @@ final class FreezeButtonPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
+    /// The colour of freezing, shared with the row buttons in the ⌥Tab
+    /// overview so the two never drift apart.
+    static let lilac = NSColor(calibratedRed: 0.62, green: 0.42, blue: 0.96, alpha: 1)
+
     func show(at slot: CGRect, frozen: Bool, tint: Tint) {
         button.frozen = frozen
         button.textColor = tint.textColor
@@ -216,11 +220,9 @@ private final class FreezeButtonView: NSView {
     override func mouseEntered(with event: NSEvent) { hot = true }
     override func mouseExited(with event: NSEvent) { hot = false }
 
-    static let lilac = NSColor(calibratedRed: 0.62, green: 0.42, blue: 0.96, alpha: 1)
-
     override func draw(_ dirtyRect: NSRect) {
         let shape = NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2)
-        Self.lilac.withAlphaComponent(hot ? 0.95 : 0.78).setFill()
+        FreezeButtonPanel.lilac.withAlphaComponent(hot ? 0.95 : 0.78).setFill()
         shape.fill()
 
         let label = frozen ? "Auftauen" : "Einfrieren"
