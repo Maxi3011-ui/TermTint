@@ -45,6 +45,13 @@ final class Switcher {
     var onMinimizeFrozen: (() -> Void)?
     /// Brings every marked window to the front.
     var onRaiseMarked: (() -> Void)?
+    /// Spreads every visible window over one screen, and takes it back.
+    var onTileAll: (() -> Void)?
+    /// Puts every window back to the size a new one would have.
+    var onDefaultSize: (() -> Void)?
+    /// Which of those are currently in effect, so the buttons can offer to
+    /// undo them.
+    var activeArrangements: (() -> Set<Arrangement>)?
     /// Called once the overview is closed, so window changes are applied while
     /// no modifier key is held.
     var onApplyPending: (() -> Void)?
@@ -72,6 +79,8 @@ final class Switcher {
         view.onRestoreAll = { [weak self] in self?.restoreAll() }
         view.onMinimizeFrozen = { [weak self] in self?.minimizeFrozen() }
         view.onRaiseMarked = { [weak self] in self?.raiseMarked() }
+        view.onTileAll = { [weak self] in self?.runArrangement { $0.onTileAll?() } }
+        view.onDefaultSize = { [weak self] in self?.runArrangement { $0.onDefaultSize?() } }
     }
 
     /// Unlike the other footer actions this one closes the overview: you
@@ -83,6 +92,14 @@ final class Switcher {
         onRaiseMarked?()
         previousApp = nil
         dismiss(activating: false)
+    }
+
+    /// Arrangements stay visible in the overview: you often want to try one,
+    /// see the result behind the panel and take it straight back.
+    private func runArrangement(_ action: (Switcher) -> Void) {
+        guard isShowing else { return }
+        action(self)
+        refreshEntries()
     }
 
     private func minimizeFrozen() {
@@ -129,6 +146,7 @@ final class Switcher {
         view.setMinimizedCount(entries.filter(\.isMinimized).count)
         view.setFrozenCount(entries.filter { $0.isFrozen && !$0.isMinimized }.count)
         view.setMarkedCount(entries.filter(\.isMarked).count)
+        view.setActive(activeArrangements?() ?? [])
         view.needsDisplay = true
     }
 
@@ -194,6 +212,7 @@ final class Switcher {
         view.setMinimizedCount(entries.filter(\.isMinimized).count)
         view.setFrozenCount(entries.filter { $0.isFrozen && !$0.isMinimized }.count)
         view.setMarkedCount(entries.filter(\.isMarked).count)
+        view.setActive(activeArrangements?() ?? [])
         view.setOverlayEnabled(isOverlayEnabled?() ?? true)
         panel.present(size: view.fittingSize)
 
@@ -400,6 +419,20 @@ final class SwitcherView: NSView {
         set { footer.onRaiseMarked = newValue }
     }
 
+    var onTileAll: (() -> Void)? {
+        get { footer.onTileAll }
+        set { footer.onTileAll = newValue }
+    }
+
+    var onDefaultSize: (() -> Void)? {
+        get { footer.onDefaultSize }
+        set { footer.onDefaultSize = newValue }
+    }
+
+    func setActive(_ arrangements: Set<Arrangement>) {
+        footer.setActive(arrangements)
+    }
+
     private let effect = NSVisualEffectView()
     private let scrim = NSView()
     private let rows = RowsView()
@@ -489,8 +522,11 @@ final class SwitcherView: NSView {
         var onRestoreAll: (() -> Void)?
         var onMinimizeFrozen: (() -> Void)?
         var onRaiseMarked: (() -> Void)?
+        var onTileAll: (() -> Void)?
+        var onDefaultSize: (() -> Void)?
 
         private var isOn = true
+        private var active: Set<Arrangement> = []
         private var minimizedCount = 0
         /// Frozen and still on screen — the ones the button can put away.
         private var frozenCount = 0
@@ -549,13 +585,21 @@ final class SwitcherView: NSView {
             needsDisplay = true
         }
 
+        func setActive(_ arrangements: Set<Arrangement>) {
+            guard arrangements != active else { return }
+            active = arrangements
+            needsDisplay = true
+        }
+
         private var restoreFont: NSFont { .systemFont(ofSize: 12, weight: .medium) }
 
-        /// One action in the left-hand row. They come and go with what there
-        /// is to do, so the row is laid out rather than hard-coded.
+        /// One action in the left-hand row. There are up to five, so they are
+        /// symbols rather than labels — five captions never fit beside the
+        /// switch. The name appears as a tooltip, the number next to the
+        /// symbol says how many windows it would touch.
         private struct Item {
             let symbol: String
-            let long: String
+            let label: String
             let count: Int
             let colour: NSColor?
             let run: (FooterView) -> Void
@@ -564,19 +608,30 @@ final class SwitcherView: NSView {
         private var items: [Item] {
             var result: [Item] = []
             if minimizedCount > 0 {
-                result.append(Item(symbol: "macwindow.on.rectangle", long: "Alle einblenden",
+                result.append(Item(symbol: "macwindow.on.rectangle", label: "Alle einblenden",
                                    count: minimizedCount, colour: nil) { $0.onRestoreAll?() })
             }
             if frozenCount > 0 {
-                result.append(Item(symbol: "snowflake", long: "Eingefrorene minimieren",
+                result.append(Item(symbol: "snowflake", label: "Eingefrorene minimieren",
                                    count: frozenCount, colour: FreezeButtonPanel.lilac) {
                     $0.onMinimizeFrozen?()
                 })
             }
             if markedCount > 0 {
-                result.append(Item(symbol: "circle.fill", long: "Markierte nach vorn",
-                                   count: markedCount, colour: MarkLook.red) { $0.onRaiseMarked?() })
+                let on = active.contains(.tileMarked)
+                result.append(Item(symbol: on ? "arrow.uturn.backward" : "circle.fill",
+                                   label: on ? "Markierte zurücklegen" : "Markierte nach vorn",
+                                   count: on ? 0 : markedCount,
+                                   colour: MarkLook.red) { $0.onRaiseMarked?() })
             }
+            let tiled = active.contains(.tileAll)
+            result.append(Item(symbol: tiled ? "arrow.uturn.backward" : "square.grid.3x3",
+                               label: tiled ? "Anordnung zurücknehmen" : "Alle auf einen Bildschirm",
+                               count: 0, colour: nil) { $0.onTileAll?() })
+            let sized = active.contains(.defaultSize)
+            result.append(Item(symbol: sized ? "arrow.uturn.backward" : "rectangle.arrowtriangle.2.inward",
+                               label: sized ? "Größen zurücknehmen" : "Alle auf Standardgröße",
+                               count: 0, colour: nil) { $0.onDefaultSize?() })
             return result
         }
 
@@ -591,20 +646,13 @@ final class SwitcherView: NSView {
             ceil((title as NSString).size(withAttributes: [.font: restoreFont]).width)
         }
 
-        /// Full labels while there is only one thing to do; as soon as there
-        /// are two, every button shrinks to its symbol and a number. Mixing
-        /// the two looks accidental, and three full labels never fit.
-        private func layoutLeft() -> [(Item, CGRect, String)] {
-            let all = items
-            guard !all.isEmpty else { return [] }
-            let compact = all.count > 1
-            var result: [(Item, CGRect, String)] = []
+        private func layoutLeft() -> [(Item, CGRect)] {
+            var result: [(Item, CGRect)] = []
             var x = Metrics.padding + 3
-            for item in all {
-                let title = compact ? "\(item.count)" : (item.count > 1 ? "\(item.long) (\(item.count))" : item.long)
-                let w = 13 + 6 + width(of: title) + 26
-                result.append((item, CGRect(x: x, y: bounds.midY - 14, width: w, height: 28), title))
-                x += w + 7
+            for item in items {
+                let w = 30 + (item.count > 0 ? width(of: "\(item.count)") + 6 : 0)
+                result.append((item, CGRect(x: x, y: bounds.midY - 14, width: w, height: 28)))
+                x += w + 6
             }
             // Should the row ever outgrow its space, drop the trailing ones
             // rather than let them slide under the switch.
@@ -726,7 +774,7 @@ final class SwitcherView: NSView {
 
         private func drawLeftButtons() {
             for (index, entry) in layoutLeft().enumerated() {
-                let (item, rect, title) = entry
+                let (item, rect) = entry
                 let hot = hotZone == .left(index)
                 let accent = item.colour
 
@@ -738,31 +786,31 @@ final class SwitcherView: NSView {
                     NSBezierPath(roundedRect: rect, xRadius: 9, yRadius: 9).fill()
                 }
 
-                let colour = NSColor(white: 1, alpha: hot ? 0.95 : (accent == nil ? 0.55 : 0.72))
-                var textLeft = rect.minX + 13
-
-                // The mark keeps its own red even here; it is the whole point
-                // of the thing, and a white dot would say nothing.
+                let colour = NSColor(white: 1, alpha: hot ? 0.95 : (accent == nil ? 0.58 : 0.74))
+                // The mark keeps its own red: it is the whole point of it, and
+                // a white dot would say nothing.
                 let glyphColour = item.symbol == "circle.fill" ? MarkLook.red : colour
-                if let symbol = NSImage(systemSymbolName: item.symbol, accessibilityDescription: nil)?
-                    .withSymbolConfiguration(.init(pointSize: item.symbol == "circle.fill" ? 9 : 12,
-                                                   weight: .semibold)) {
+                let size: CGFloat = item.symbol == "circle.fill" ? 9 : 12
+                var left = rect.minX + (item.count > 0 ? 11 : rect.width / 2 - 6)
+
+                if let symbol = NSImage(systemSymbolName: item.symbol, accessibilityDescription: item.label)?
+                    .withSymbolConfiguration(.init(pointSize: size, weight: .semibold)) {
                     let glyph = NSImage(size: symbol.size, flipped: false) { bounds in
                         symbol.draw(in: bounds)
                         glyphColour.set()
                         bounds.fill(using: .sourceAtop)
                         return true
                     }
-                    glyph.draw(in: CGRect(x: textLeft, y: rect.midY - symbol.size.height / 2,
+                    glyph.draw(in: CGRect(x: left, y: rect.midY - symbol.size.height / 2,
                                           width: symbol.size.width, height: symbol.size.height))
-                    textLeft += symbol.size.width + 6
+                    left += symbol.size.width + 6
                 }
 
-                NSAttributedString(string: title, attributes: [
+                guard item.count > 0 else { continue }
+                NSAttributedString(string: "\(item.count)", attributes: [
                     .font: restoreFont,
                     .foregroundColor: colour,
-                ]).draw(with: CGRect(x: textLeft, y: rect.midY - 8,
-                                     width: rect.maxX - textLeft, height: 16),
+                ]).draw(with: CGRect(x: left, y: rect.midY - 8, width: rect.maxX - left, height: 16),
                         options: [.usesLineFragmentOrigin])
             }
         }

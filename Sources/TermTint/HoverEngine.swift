@@ -76,6 +76,11 @@ final class HoverEngine {
     private let freezer = Freezer()
     private let freezeButton = FreezeButtonPanel()
     private let markButton = MarkButtonPanel()
+    /// What each window looked like before an arrangement was applied, so the
+    /// same button can undo it.
+    private var snapshots: [Arrangement: [WindowRef: CGRect]] = [:]
+    /// Runs only while a veil or a mark dot is on screen.
+    private var attachmentTicker: Timer?
     private var markDots: [WindowRef: MarkDot] = [:]
     private var veils: [WindowRef: FreezeVeil] = [:]
 
@@ -148,6 +153,19 @@ final class HoverEngine {
         monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { [weak self] _ in
             self?.keyPressed()
         } as Any)
+        // Switching desks, hiding or activating an app moves windows out from
+        // under their veils and mark dots without the Accessibility API saying
+        // a word. Those panels would stay lying on an empty desktop.
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name: NSNotification.Name in [NSWorkspace.activeSpaceDidChangeNotification,
+                                          NSWorkspace.didActivateApplicationNotification,
+                                          NSWorkspace.didHideApplicationNotification,
+                                          NSWorkspace.didUnhideApplicationNotification] {
+            monitors.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.refreshAttachments()
+            } as Any)
+        }
+
         // Local counterparts, for the brief moment our own panel is key while editing.
         monitors.append(NSEvent.addLocalMonitorForEvents(matching: moves) { [weak self] event in
             self?.pointerMoved()
@@ -319,8 +337,7 @@ final class HoverEngine {
             if ref == hovered { panel.place(at: frame) }
             pointerMoved()
             updateOcclusion()
-            updateVeils()
-            updateMarkDots()
+            refreshAttachments()
 
         case .titleChanged(let ref):
             guard states[ref] != nil else { return }
@@ -407,8 +424,7 @@ final class HoverEngine {
 
         invalidateWindowList()
         pointerMoved(force: true)
-        updateVeils()
-        updateMarkDots()
+        refreshAttachments()
     }
 
     /// Retries a failed or suspiciously empty window query a few times, then
@@ -435,8 +451,7 @@ final class HoverEngine {
         invalidateWindowList()
         pointerMoved(force: true)
         updateOcclusion()
-        updateVeils()
-        updateMarkDots()
+        refreshAttachments()
     }
 
     @objc private func screensChanged() {
@@ -911,8 +926,7 @@ final class HoverEngine {
         for ref in Array(states.keys) where states[ref]?.activity.isFrozen == true {
             states[ref]?.activity.thaw()
         }
-        updateVeils()
-        updateMarkDots()
+        refreshAttachments()
         redrawHovered()
     }
 
@@ -953,7 +967,28 @@ final class HoverEngine {
     /// Brings every marked window to the front and lays them out so they
     /// cover the screen without overlapping — the point of marking a handful
     /// of windows is usually to work with all of them at once.
+    func isArrangementActive(_ kind: Arrangement) -> Bool { snapshots[kind] != nil }
+
+    /// Remembers where the given windows are, so the next press can undo it.
+    private func remember(_ kind: Arrangement, _ refs: [WindowRef]) {
+        var frames: [WindowRef: CGRect] = [:]
+        for ref in refs { frames[ref] = states[ref]?.frame }
+        snapshots[kind] = frames
+    }
+
+    /// Puts the windows back and forgets the arrangement.
+    private func undo(_ kind: Arrangement) {
+        guard let frames = snapshots.removeValue(forKey: kind) else { return }
+        for (ref, frame) in frames where states[ref] != nil {
+            watcher.setFrame(frame, for: ref)
+            states[ref]?.frame = frame
+        }
+        Log.write("Anordnung zurückgenommen: \(frames.count) Fenster")
+        refreshAttachments()
+    }
+
     func raiseAllMarked() {
+        if isArrangementActive(.tileMarked) { undo(.tileMarked); return }
         let marked = states.filter { $0.value.isMarked }
         guard !marked.isEmpty else { return }
 
@@ -973,6 +1008,7 @@ final class HoverEngine {
             watcher.raise(ref)
         }
 
+        remember(.tileMarked, ordered.map(\.key))
         let area = tilingScreen().visibleFrame
         let frames = Tiling.grid(count: ordered.count, in: area)
         for (index, entry) in ordered.enumerated() where index < frames.count {
@@ -980,8 +1016,70 @@ final class HoverEngine {
             states[entry.key]?.frame = frames[index]
         }
         Log.write("Markierte angeordnet: \(ordered.count) auf \(Int(area.width))x\(Int(area.height))")
-        updateVeils()
-        updateMarkDots()
+        refreshAttachments()
+    }
+
+    /// Every visible window onto one screen, however small they end up. No
+    /// sorting beyond reading order — the point is to see all of them at once.
+    func tileAllWindows() {
+        if isArrangementActive(.tileAll) { undo(.tileAll); return }
+        let visible = states.filter { $0.value.isOnScreen && !$0.value.isMinimized }
+        guard !visible.isEmpty else { return }
+
+        let ordered = visible.sorted { lhs, rhs in
+            if abs(lhs.value.frame.maxY - rhs.value.frame.maxY) > 40 {
+                return lhs.value.frame.maxY > rhs.value.frame.maxY
+            }
+            return lhs.value.frame.minX < rhs.value.frame.minX
+        }
+        remember(.tileAll, ordered.map(\.key))
+
+        let area = tilingScreen().visibleFrame
+        let frames = Tiling.grid(count: ordered.count, in: area)
+        for (index, entry) in ordered.enumerated() where index < frames.count {
+            watcher.setFrame(frames[index], for: entry.key)
+            states[entry.key]?.frame = frames[index]
+        }
+        Log.write("Alle angeordnet: \(ordered.count) auf \(Int(area.width))x\(Int(area.height))")
+        refreshAttachments()
+    }
+
+    /// Every window back to the size a freshly opened one would have. Only the
+    /// size — nothing is moved, because that is what was asked for.
+    ///
+    /// Set in columns and rows rather than points: that is how Terminal itself
+    /// thinks about it, so the result matches a new window exactly, whatever
+    /// the font or the display.
+    func resizeAllToDefault() {
+        if isArrangementActive(.defaultSize) { undo(.defaultSize); return }
+        let visible = states.filter { $0.value.isOnScreen && !$0.value.isMinimized }
+        guard !visible.isEmpty else { return }
+        remember(.defaultSize, Array(visible.keys))
+
+        let source = """
+        tell application "Terminal"
+          set c to number of columns of default settings
+          set r to number of rows of default settings
+          repeat with w in windows
+            try
+              set number of columns of w to c
+              set number of rows of w to r
+            end try
+          end repeat
+          return (c as text) & "x" & (r as text)
+        end tell
+        """
+        var error: NSDictionary?
+        let answer = NSAppleScript(source: source)?.executeAndReturnError(&error).stringValue
+        if let error {
+            Log.write("Standardgröße fehlgeschlagen: \(error[NSAppleScript.errorMessage] ?? error)")
+            snapshots[.defaultSize] = nil
+            NSSound.beep()
+            return
+        }
+        Log.write("Standardgröße gesetzt (\(answer ?? "?")) für \(visible.count) Fenster")
+        // The frames we hold are stale now; let the watcher tell us the truth.
+        refreshWindows()
     }
 
     /// The screen you are looking at, which is the one the pointer is on.
@@ -1012,8 +1110,7 @@ final class HoverEngine {
             if freezer.isFrozen(tty) { state.activity.freeze() }
         }
         states[ref] = state
-        updateVeils()
-        updateMarkDots()
+        refreshAttachments()
         redrawHovered()
     }
 
@@ -1034,16 +1131,73 @@ final class HoverEngine {
         if !ttys.isEmpty {
             for tty in freezer.frozen.keys where !open.contains(tty) { freezer.thaw(tty) }
         }
-        updateVeils()
-        updateMarkDots()
+        refreshAttachments()
+    }
+
+    /// Window ids the window server is showing on the current Space right
+    /// now. The stored flags are not enough: minimising a window or switching
+    /// desks changes nothing the watcher reports, and a veil or a mark dot
+    /// whose window went away stays lying on the desktop.
+    /// Veils and mark dots together, off one list.
+    private func refreshAttachments() {
+        let visible = visibleWindowIDs()
+        updateVeils(visible: visible)
+        updateMarkDots(visible: visible)
+        syncAttachmentTicker()
+    }
+
+    private func visibleWindowIDs() -> Set<Int> {
+        let wanted = Set(states.values.compactMap { state -> Int? in
+            guard state.isMarked || freezer.isFrozen(state.tty) else { return nil }
+            return state.windowID
+        })
+        guard !wanted.isEmpty else { return [] }
+        // The on-screen listing is the only one that reliably says what is
+        // actually showing: asking about single windows by id returns a
+        // description even for a minimised one, without the "is on screen"
+        // flag, which made every veil vanish at once.
+        invalidateWindowList()
+        var result: Set<Int> = []
+        for entry in currentWindowList() {
+            guard let id = entry[kCGWindowNumber as String] as? Int, wanted.contains(id) else { continue }
+            result.insert(id)
+        }
+        return result
+    }
+
+    /// Terminal does not reliably announce a window being minimised — measured
+    /// on this machine: minimising posts no Accessibility notification at all,
+    /// and switching desks posts nothing either. A veil or a mark dot would
+    /// then stay lying on an empty desktop, which is what happened.
+    ///
+    /// So their visibility is checked rather than awaited. The check runs only
+    /// while something is actually attached, asks about those few windows
+    /// alone, and stops itself as soon as the last one is gone — at rest there
+    /// is still no timer anywhere.
+    private func syncAttachmentTicker() {
+        let needed = !veils.isEmpty || !markDots.isEmpty
+        if needed, attachmentTicker == nil {
+            let timer = Timer(timeInterval: 1.2, repeats: true) { [weak self] _ in
+                self?.refreshAttachments()
+            }
+            timer.tolerance = 0.4
+            RunLoop.main.add(timer, forMode: .common)
+            attachmentTicker = timer
+            Log.write("Anhänger-Prüfung gestartet")
+        } else if !needed, attachmentTicker != nil {
+            attachmentTicker?.invalidate()
+            attachmentTicker = nil
+            Log.write("Anhänger-Prüfung beendet")
+        }
     }
 
     /// The dot has to be visible when nothing is hovered, so it is its own
     /// little window stacked directly above the one it belongs to.
-    private func updateMarkDots() {
+    private func updateMarkDots(visible: Set<Int>? = nil) {
+        let onScreen = visible ?? visibleWindowIDs()
         for (ref, state) in states {
             guard state.isMarked, state.isOnScreen, !state.isMinimized,
-                  let id = state.windowID else {
+                  let id = state.windowID, onScreen.contains(id) else {
                 markDots[ref]?.hide()
                 if !state.isMarked { markDots[ref] = nil }
                 continue
@@ -1062,10 +1216,12 @@ final class HoverEngine {
     /// Driven by the same events as everything else: list, focus, geometry
     /// and app changes. Stacking each veil right above its own window keeps it
     /// below whatever lies on top of that window.
-    private func updateVeils() {
+    private func updateVeils(visible: Set<Int>? = nil) {
+        let onScreen = visible ?? visibleWindowIDs()
         for (ref, state) in states {
             let frozen = freezer.isFrozen(state.tty)
-            guard frozen, state.isOnScreen, !state.isMinimized, let id = state.windowID else {
+            guard frozen, state.isOnScreen, !state.isMinimized,
+                  let id = state.windowID, onScreen.contains(id) else {
                 veils[ref]?.hide()
                 if !frozen { veils[ref] = nil }
                 continue

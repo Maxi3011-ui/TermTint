@@ -23,6 +23,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switcher.onRestoreAll = { [engine] in engine.restoreAllMinimized() }
         switcher.onMinimizeFrozen = { [engine] in engine.minimizeAllFrozen() }
         switcher.onRaiseMarked = { [engine] in engine.raiseAllMarked() }
+        switcher.onTileAll = { [engine] in engine.tileAllWindows() }
+        switcher.onDefaultSize = { [engine] in engine.resizeAllToDefault() }
+        switcher.activeArrangements = { [engine] in
+            Set([Arrangement.tileAll, .tileMarked, .defaultSize].filter(engine.isArrangementActive))
+        }
         switcher.onApplyPending = { [engine] in engine.applyPendingWindowStates() }
 
         if AXIsProcessTrusted() {

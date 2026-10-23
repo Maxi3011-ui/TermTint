@@ -43,3 +43,15 @@ enum Tiling {
         return result
     }
 }
+
+/// A change to every window's geometry that can be taken back again. Pressing
+/// the same button twice puts the windows back where they were, which matters
+/// because these actions move everything at once.
+enum Arrangement: Hashable {
+    /// All visible windows spread over one screen.
+    case tileAll
+    /// The marked ones to the front, side by side.
+    case tileMarked
+    /// Every window back to the size a new one would have.
+    case defaultSize
+}
