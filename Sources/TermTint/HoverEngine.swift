@@ -771,6 +771,17 @@ final class HoverEngine {
     }
 
     private func pointerClicked() {
+        // A click usually raises a window, and that changes nothing the
+        // watcher reports — not the list, not the geometry, not the title. The
+        // little mark dots would stay buried under the window they belong to,
+        // which looks exactly as if clicking one had removed it. So re-stack
+        // them once the raise has gone through.
+        if !markDots.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.updateMarkDots()
+            }
+        }
+
         guard isEnabled, !isSuspended, editing == nil,
               let hovered, states[hovered]?.dismissed == false
         else { return }
@@ -1038,6 +1049,7 @@ final class HoverEngine {
                 continue
             }
             let dot = markDots[ref] ?? MarkDot()
+            dot.onClick = { [weak self] in self?.toggleMark(ref) }
             markDots[ref] = dot
             dot.show(over: state.frame, titleBarHeight: state.titleBarHeight, windowID: id)
         }

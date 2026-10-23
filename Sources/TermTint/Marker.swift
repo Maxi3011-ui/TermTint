@@ -49,6 +49,9 @@ final class MarkDot: NSPanel {
 
     static let size: CGFloat = 13
 
+    /// Clicking the dot takes the mark off — everywhere, not just here.
+    var onClick: (() -> Void)?
+
     init() {
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
@@ -56,11 +59,13 @@ final class MarkDot: NSPanel {
         backgroundColor = .clear
         hasShadow = false
         level = .normal
-        ignoresMouseEvents = true
         hidesOnDeactivate = false
+        becomesKeyOnlyIfNeeded = true
         collectionBehavior = [.ignoresCycle, .fullScreenAuxiliary]
         animationBehavior = .none
-        contentView = MarkDotView()
+        let view = MarkDotView()
+        view.onClick = { [weak self] in self?.onClick?() }
+        contentView = view
     }
 
     override var canBecomeKey: Bool { false }
@@ -87,6 +92,26 @@ final class MarkDot: NSPanel {
 }
 
 private final class MarkDotView: NSView {
+
+    var onClick: (() -> Void)?
+    private var hot = false { didSet { if hot != oldValue { needsDisplay = true } } }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        addTrackingArea(NSTrackingArea(rect: .zero,
+                                       options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self))
+    }
+
+    required init?(coder: NSCoder) { fatalError("unsupported") }
+
+    // Without this the first click would only bring the panel forward and be
+    // swallowed — the dot has to work on the very first press.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { onClick?() }
+    override func mouseEntered(with event: NSEvent) { hot = true }
+    override func mouseExited(with event: NSEvent) { hot = false }
+
     override func draw(_ dirtyRect: NSRect) {
         let dot = bounds.insetBy(dx: 1.5, dy: 1.5)
         // A dark ring first, so the dot stays legible on a light title bar too.
@@ -96,6 +121,10 @@ private final class MarkDotView: NSView {
         ring.stroke()
         MarkLook.red.setFill()
         NSBezierPath(ovalIn: dot).fill()
+        guard hot else { return }
+        // A hint that it does something: a white core under the pointer.
+        NSColor(white: 1, alpha: 0.85).setFill()
+        NSBezierPath(ovalIn: dot.insetBy(dx: 3, dy: 3)).fill()
     }
 }
 
