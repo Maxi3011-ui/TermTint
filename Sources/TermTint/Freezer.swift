@@ -69,6 +69,22 @@ final class Freezer {
         Log.write("aufgetaut: \(tty)")
     }
 
+    /// True while any of the stopped processes still exists. A window can
+    /// vanish from every list macOS offers and the session behind it still be
+    /// there — parked in Stage Manager, sitting on another desk, or simply
+    /// unreadable for a moment.
+    func stillExists(_ tty: String) -> Bool {
+        guard let pids = frozen[tty] else { return false }
+        return pids.contains { kill($0, 0) == 0 }
+    }
+
+    /// Drops the bookkeeping without resuming anything.
+    func forget(_ tty: String) {
+        guard frozen[tty] != nil else { return }
+        frozen[tty] = nil
+        save()
+    }
+
     func thawAll() {
         for tty in Array(frozen.keys) { thaw(tty) }
     }

@@ -429,7 +429,16 @@ final class HoverEngine {
                 }
                 continue
             }
-            if let tty = states[ref]?.tty, freezer.isFrozen(tty) { freezer.thaw(tty) }
+            // Deliberately not thawing here. A dead Accessibility element is
+            // not proof that the window is gone: parking one in Stage Manager
+            // replaces the element, and a session Maxi had frozen on purpose
+            // then started running again. Only drop the bookkeeping once the
+            // processes themselves are gone. A session left stopped behind a
+            // genuinely closed window costs nothing — it uses no CPU — and
+            // the menu still offers "Alle auftauen".
+            if let tty = states[ref]?.tty, freezer.isFrozen(tty), !freezer.stillExists(tty) {
+                freezer.forget(tty)
+            }
             states.removeValue(forKey: ref)
             if ref == editing { panel.overlay.cancelEditing() }
             if ref == hovered {
