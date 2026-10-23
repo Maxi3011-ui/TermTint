@@ -753,10 +753,14 @@ final class HoverEngine {
             // "that other app" nor "Terminal", and treating that uncertainty as
             // "do not clip" let the overlay paint straight over the window in
             // front of it. The list order above already settles the question.
-            result.append(CGRect(x: overlap.minX - frame.minX,
-                                 y: overlap.minY - frame.minY,
-                                 width: overlap.width,
-                                 height: overlap.height))
+            // The whole window, not just the overlapping piece: the overlay
+            // has to cut around its rounded corners, and that is only possible
+            // while we still know where its real edges are. Whatever sticks
+            // out beyond us is clipped by our own bounds anyway.
+            result.append(CGRect(x: cocoa.minX - frame.minX,
+                                 y: cocoa.minY - frame.minY,
+                                 width: cocoa.width,
+                                 height: cocoa.height))
         }
         return result
     }

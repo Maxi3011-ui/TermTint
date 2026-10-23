@@ -437,7 +437,12 @@ final class OverlayView: NSView, NSTextFieldDelegate {
         } else {
             let path = CGMutablePath()
             path.addRoundedRect(in: bounds, cornerWidth: Metrics.corner, cornerHeight: Metrics.corner)
-            for rect in occluders { path.addRect(rect) }
+            // Rounded, not square: the window in front has rounded corners
+            // too, and a square hole leaves a hard little bite out of the
+            // colour at each of them.
+            for rect in occluders {
+                path.addRoundedRect(in: rect, cornerWidth: Metrics.corner, cornerHeight: Metrics.corner)
+            }
 
             let mask = CAShapeLayer()
             mask.path = path
@@ -466,7 +471,9 @@ final class OverlayView: NSView, NSTextFieldDelegate {
         let cutouts = occluders.map { $0.offsetBy(dx: -origin.x, dy: -origin.y) }
         effect.maskImage = NSImage(size: size, flipped: false) { _ in
             let shape = NSBezierPath(roundedRect: shapeRect, xRadius: corner, yRadius: corner)
-            for rect in cutouts { shape.appendRect(rect) }
+            for rect in cutouts {
+                shape.append(NSBezierPath(roundedRect: rect, xRadius: corner, yRadius: corner))
+            }
             shape.windingRule = .evenOdd
             NSColor.black.setFill()
             shape.fill()
