@@ -18,6 +18,12 @@ enum Geo {
         let top = NSScreen.screens.first?.frame.maxY ?? 0
         return CGRect(x: rect.minX, y: top - rect.maxY, width: rect.width, height: rect.height)
     }
+
+    /// The way back, for telling a window where to go.
+    static func axRect(fromCocoa rect: CGRect) -> CGRect {
+        let top = NSScreen.screens.first?.frame.maxY ?? 0
+        return CGRect(x: rect.minX, y: top - rect.maxY, width: rect.width, height: rect.height)
+    }
 }
 
 enum AX {
@@ -252,6 +258,24 @@ final class TerminalWatcher {
 
     func isMinimized(_ ref: WindowRef) -> Bool {
         AX.bool(ref.element, kAXMinimizedAttribute)
+    }
+
+    /// Moves and resizes a window. Position is set first and again afterwards:
+    /// Terminal snaps the size to whole character cells, and resizing around a
+    /// fixed centre can shift the origin out from under us.
+    func setFrame(_ cocoa: CGRect, for ref: WindowRef) {
+        let rect = Geo.axRect(fromCocoa: cocoa)
+        var origin = CGPoint(x: rect.minX, y: rect.minY)
+        var size = CGSize(width: rect.width, height: rect.height)
+        if let value = AXValueCreate(.cgPoint, &origin) {
+            AXUIElementSetAttributeValue(ref.element, kAXPositionAttribute as CFString, value)
+        }
+        if let value = AXValueCreate(.cgSize, &size) {
+            AXUIElementSetAttributeValue(ref.element, kAXSizeAttribute as CFString, value)
+        }
+        if let value = AXValueCreate(.cgPoint, &origin) {
+            AXUIElementSetAttributeValue(ref.element, kAXPositionAttribute as CFString, value)
+        }
     }
 
     func setMinimized(_ minimized: Bool, for ref: WindowRef) {

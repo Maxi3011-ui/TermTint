@@ -928,25 +928,53 @@ final class HoverEngine {
 
     var markedCount: Int { states.values.filter(\.isMarked).count }
 
-    /// Brings every marked window to the front, minimised ones included —
-    /// `raise` takes them out of the Dock first. Raised in list order, so the
-    /// last one ends up on top and the rest stack behind it.
-    func raiseAllMarked() {
-        for (ref, state) in states where state.isMarked {
-            pendingMinimize[ref] = false
-            states[ref]?.isMinimized = false
-            states[ref]?.isOnScreen = true
-            watcher.raise(ref)
-            Log.write("Nach vorn geholt: \(state.displayName)")
-        }
-        updateMarkDots()
-    }
-
     func clearAllMarks() {
         for ref in Array(states.keys) { states[ref]?.isMarked = false }
         MarkStore.clear()
         updateMarkDots()
         redrawHovered()
+    }
+
+    /// Brings every marked window to the front and lays them out so they
+    /// cover the screen without overlapping — the point of marking a handful
+    /// of windows is usually to work with all of them at once.
+    func raiseAllMarked() {
+        let marked = states.filter { $0.value.isMarked }
+        guard !marked.isEmpty else { return }
+
+        // Keep the reading order people already have in their head: top row
+        // first, left to right.
+        let ordered = marked.sorted { lhs, rhs in
+            if abs(lhs.value.frame.maxY - rhs.value.frame.maxY) > 40 {
+                return lhs.value.frame.maxY > rhs.value.frame.maxY
+            }
+            return lhs.value.frame.minX < rhs.value.frame.minX
+        }
+
+        for (ref, _) in ordered {
+            pendingMinimize[ref] = false
+            states[ref]?.isMinimized = false
+            states[ref]?.isOnScreen = true
+            watcher.raise(ref)
+        }
+
+        let area = tilingScreen().visibleFrame
+        let frames = Tiling.grid(count: ordered.count, in: area)
+        for (index, entry) in ordered.enumerated() where index < frames.count {
+            watcher.setFrame(frames[index], for: entry.key)
+            states[entry.key]?.frame = frames[index]
+        }
+        Log.write("Markierte angeordnet: \(ordered.count) auf \(Int(area.width))x\(Int(area.height))")
+        updateVeils()
+        updateMarkDots()
+    }
+
+    /// The screen you are looking at, which is the one the pointer is on.
+    private func tilingScreen() -> NSScreen {
+        let point = NSEvent.mouseLocation
+        return NSScreen.screens.first { $0.frame.contains(point) }
+            ?? NSScreen.main
+            ?? NSScreen.screens[0]
     }
 
     /// Pauses a session or lets it run on. Reached from the button in the
