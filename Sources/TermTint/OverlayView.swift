@@ -174,6 +174,8 @@ final class OverlayView: NSView, NSTextFieldDelegate {
     /// Room under the caption for the freeze button, which lives in its own
     /// clickable panel — this view never takes clicks.
     private(set) var freezeSlot: CGRect = .zero
+    /// Sits left of the freeze button; the pair stays centred together.
+    private(set) var markSlot: CGRect = .zero
     static let freezeSize = CGSize(width: 136, height: 30)
 
     // MARK: - Editing
@@ -318,11 +320,20 @@ final class OverlayView: NSView, NSTextFieldDelegate {
                                height: captionHeight)
 
         let above = captionHeight > 0 ? caption.frame.minY : pill.frame.minY
-        freezeSlot = showsFreeze
-            ? CGRect(x: content.midX - Self.freezeSize.width / 2,
-                     y: above - Metrics.gap - 4 - Self.freezeSize.height,
-                     width: Self.freezeSize.width, height: Self.freezeSize.height)
-            : .zero
+        guard showsFreeze else {
+            freezeSlot = .zero
+            markSlot = .zero
+            return
+        }
+        let gap: CGFloat = 8
+        let mark = MarkButtonPanel.size
+        let pairWidth = mark.width + gap + Self.freezeSize.width
+        let left = content.midX - pairWidth / 2
+        let bottom = above - Metrics.gap - 4 - Self.freezeSize.height
+        markSlot = CGRect(x: left, y: bottom + (Self.freezeSize.height - mark.height) / 2,
+                          width: mark.width, height: mark.height)
+        freezeSlot = CGRect(x: left + mark.width + gap, y: bottom,
+                            width: Self.freezeSize.width, height: Self.freezeSize.height)
     }
 
     private func layoutEmblem(in content: CGRect) {
@@ -410,15 +421,6 @@ final class OverlayView: NSView, NSTextFieldDelegate {
         CATransaction.setDisableActions(true)
         defer { CATransaction.commit() }
 
-        guard !occluders.isEmpty else {
-            if maskCache != nil {
-                layer?.mask = nil
-                effect.maskImage = nil
-                maskCache = nil
-            }
-            return
-        }
-
         // Rebuilding the mask forces the window server to redo the blur shape;
         // only do it when the shape actually changed.
         let signature = (bounds, occluders, effect.frame)
@@ -428,28 +430,43 @@ final class OverlayView: NSView, NSTextFieldDelegate {
         }
         maskCache = signature
 
-        let path = CGMutablePath()
-        path.addRoundedRect(in: bounds, cornerWidth: Metrics.corner, cornerHeight: Metrics.corner)
-        for rect in occluders { path.addRect(rect) }
+        // The layer only needs a mask to punch out covering windows; its own
+        // corner radius already rounds the edge.
+        if occluders.isEmpty {
+            layer?.mask = nil
+        } else {
+            let path = CGMutablePath()
+            path.addRoundedRect(in: bounds, cornerWidth: Metrics.corner, cornerHeight: Metrics.corner)
+            for rect in occluders { path.addRect(rect) }
 
-        let mask = CAShapeLayer()
-        mask.path = path
-        mask.fillRule = .evenOdd
-        mask.fillColor = NSColor.black.cgColor
-        mask.frame = bounds
-        layer?.mask = mask
+            let mask = CAShapeLayer()
+            mask.path = path
+            mask.fillRule = .evenOdd
+            mask.fillColor = NSColor.black.cgColor
+            mask.frame = bounds
+            layer?.mask = mask
+        }
 
-        // The behind-window blur is shaped by the window server, so the visual
-        // effect view needs its own mask — in its own coordinates, which are
-        // offset from ours by the title bar.
+        // The behind-window blur is shaped by the window server, which ignores
+        // the layer's corner radius entirely — so the frosted area needs its
+        // own rounded mask, always, not just when something covers us. Without
+        // it a square sheet of blur sits under the rounded tint and shows at
+        // every corner.
         let origin = effect.frame.origin
         let size = effect.frame.size
-        guard size.width > 0, size.height > 0 else { return }
+        guard size.width > 0, size.height > 0 else {
+            effect.maskImage = nil
+            return
+        }
+        // The whole overlay's shape, expressed in the blur's own coordinates:
+        // its top corners fall outside the image, so only the bottom two round.
+        let shapeRect = CGRect(x: -origin.x, y: -origin.y,
+                               width: bounds.width, height: bounds.height)
+        let corner = Metrics.corner
+        let cutouts = occluders.map { $0.offsetBy(dx: -origin.x, dy: -origin.y) }
         effect.maskImage = NSImage(size: size, flipped: false) { _ in
-            let shape = NSBezierPath(rect: CGRect(origin: .zero, size: size))
-            for rect in self.occluders {
-                shape.appendRect(rect.offsetBy(dx: -origin.x, dy: -origin.y))
-            }
+            let shape = NSBezierPath(roundedRect: shapeRect, xRadius: corner, yRadius: corner)
+            for rect in cutouts { shape.appendRect(rect) }
             shape.windingRule = .evenOdd
             NSColor.black.setFill()
             shape.fill()

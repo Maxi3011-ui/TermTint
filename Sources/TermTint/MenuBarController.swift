@@ -62,6 +62,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         thaw.isEnabled = engine.frozenCount > 0
         menu.addItem(thaw)
 
+        let unmark = NSMenuItem(title: "Alle Markierungen entfernen",
+                                action: #selector(clearMarks), keyEquivalent: "")
+        unmark.target = self
+        unmark.isEnabled = engine.markedCount > 0
+        menu.addItem(unmark)
+
         let clear = NSMenuItem(title: "Alle Namen löschen", action: #selector(clearNames), keyEquivalent: "")
         clear.target = self
         clear.isEnabled = engine.windowCount > 0
@@ -103,6 +109,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func thawAll() {
         engine.thawAll()
+    }
+
+    @objc private func clearMarks() {
+        engine.clearAllMarks()
     }
 
     @objc private func clearNames() {

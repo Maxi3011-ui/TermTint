@@ -22,6 +22,8 @@ final class Switcher {
         let isMinimized: Bool
         /// Paused with SIGSTOP — the row button thaws it again.
         let isFrozen: Bool
+        /// Marked by hand with the red dot.
+        let isMarked: Bool
     }
 
     var entriesProvider: (() -> [Entry])?
@@ -35,6 +37,8 @@ final class Switcher {
     var onToggleMinimize: ((WindowRef) -> Void)?
     /// Clicking a row's freeze button pauses that session or lets it run on.
     var onToggleFreeze: ((WindowRef) -> Void)?
+    /// Clicking a row's red dot marks that window, or takes the mark off.
+    var onToggleMark: ((WindowRef) -> Void)?
     /// Brings every minimised window back.
     var onRestoreAll: (() -> Void)?
     /// Puts every paused window into the Dock.
@@ -62,6 +66,7 @@ final class Switcher {
         view.onToggle = { [weak self] in self?.toggleOverlay() }
         view.onDotClick = { [weak self] index in self?.toggleMinimize(index) }
         view.onFreezeClick = { [weak self] index in self?.toggleFreeze(index) }
+        view.onMarkClick = { [weak self] index in self?.toggleMark(index) }
         view.onRestoreAll = { [weak self] in self?.restoreAll() }
         view.onMinimizeFrozen = { [weak self] in self?.minimizeFrozen() }
     }
@@ -81,6 +86,13 @@ final class Switcher {
     /// Unlike minimising, this is carried out at once: it signals a process
     /// rather than asking Terminal to move a window, so ⌥ being held is
     /// harmless.
+    private func toggleMark(_ index: Int) {
+        guard isShowing, entries.indices.contains(index) else { return }
+        onToggleMark?(entries[index].ref)
+        selection = index
+        refreshEntries()
+    }
+
     private func toggleFreeze(_ index: Int) {
         guard isShowing, entries.indices.contains(index) else { return }
         onToggleFreeze?(entries[index].ref)
@@ -351,6 +363,11 @@ final class SwitcherView: NSView {
     var onFreezeClick: ((Int) -> Void)? {
         get { rows.onFreezeClick }
         set { rows.onFreezeClick = newValue }
+    }
+
+    var onMarkClick: ((Int) -> Void)? {
+        get { rows.onMarkClick }
+        set { rows.onMarkClick = newValue }
     }
     var onRestoreAll: (() -> Void)? {
         get { footer.onRestoreAll }
@@ -730,8 +747,10 @@ final class SwitcherView: NSView {
         var onClick: ((Int) -> Void)?
         var onDotClick: ((Int) -> Void)?
         var onFreezeClick: ((Int) -> Void)?
+        var onMarkClick: ((Int) -> Void)?
         private var hotDot: Int?
         private var hotFreeze: Int?
+        private var hotMark: Int?
 
         override var isFlipped: Bool { true }
 
@@ -752,9 +771,11 @@ final class SwitcherView: NSView {
             let point = convert(event.locationInWindow, from: nil)
             let overDot = dotIndex(at: point)
             let overFreeze = freezeIndex(at: point)
-            if overDot != hotDot || overFreeze != hotFreeze {
+            let overMark = markIndex(at: point)
+            if overDot != hotDot || overFreeze != hotFreeze || overMark != hotMark {
                 hotDot = overDot
                 hotFreeze = overFreeze
+                hotMark = overMark
                 needsDisplay = true
             }
             guard let index = index(at: point) else { return }
@@ -762,9 +783,10 @@ final class SwitcherView: NSView {
         }
 
         override func mouseExited(with event: NSEvent) {
-            guard hotDot != nil || hotFreeze != nil else { return }
+            guard hotDot != nil || hotFreeze != nil || hotMark != nil else { return }
             hotDot = nil
             hotFreeze = nil
+            hotMark = nil
             needsDisplay = true
         }
 
@@ -780,6 +802,10 @@ final class SwitcherView: NSView {
             }
             if let freeze = freezeIndex(at: point) {
                 onFreezeClick?(freeze)
+                return
+            }
+            if let mark = markIndex(at: point) {
+                onMarkClick?(mark)
                 return
             }
             guard let index = index(at: point) else { return }
@@ -798,6 +824,16 @@ final class SwitcherView: NSView {
         /// finds it in the same place in every line.
         static func freezeFrame(in row: CGRect) -> CGRect {
             CGRect(x: row.maxX - 12 - 22, y: row.midY - 11, width: 22, height: 22)
+        }
+
+        /// Left of the freeze button, same size, same rhythm.
+        static func markFrame(in row: CGRect) -> CGRect {
+            freezeFrame(in: row).offsetBy(dx: -28, dy: 0)
+        }
+
+        private func markIndex(at point: CGPoint) -> Int? {
+            guard let index = index(at: point), let row = rowFrame(for: index) else { return nil }
+            return Self.markFrame(in: row).insetBy(dx: -3, dy: -4).contains(point) ? index : nil
         }
 
         private func freezeIndex(at point: CGPoint) -> Int? {
@@ -930,9 +966,11 @@ final class SwitcherView: NSView {
             // button — including the ones with nothing to say on the right.
             let freeze = Self.freezeFrame(in: row)
             drawFreezeButton(in: freeze, frozen: entry.isFrozen, isHot: hotFreeze == entryIndex)
+            let mark = Self.markFrame(in: row)
+            drawMarkButton(in: mark, marked: entry.isMarked, isHot: hotMark == entryIndex)
 
             let captionWidth: CGFloat = 168
-            let captionRight = freeze.minX - 8
+            let captionRight = mark.minX - 8
             let nameStyle = NSMutableParagraphStyle()
             nameStyle.lineBreakMode = .byTruncatingTail
             let name = NSAttributedString(string: entry.name.isEmpty ? "Ohne Namen" : entry.name, attributes: [
@@ -977,6 +1015,24 @@ final class SwitcherView: NSView {
                 NSColor.systemOrange.setFill()
                 NSBezierPath(ovalIn: dot).fill()
             }
+        }
+
+        /// The mark you set by hand: a hollow ring you can barely see until
+        /// you reach for it, a solid red dot once it means something.
+        private func drawMarkButton(in rect: CGRect, marked: Bool, isHot: Bool) {
+            if marked {
+                MarkLook.red.withAlphaComponent(isHot ? 1 : 0.92).setFill()
+                NSBezierPath(ovalIn: rect.insetBy(dx: 5, dy: 5)).fill()
+                return
+            }
+            if isHot {
+                NSColor(white: 1, alpha: 0.14).setFill()
+                NSBezierPath(ovalIn: rect).fill()
+            }
+            MarkLook.red.withAlphaComponent(isHot ? 0.9 : 0.34).setStroke()
+            let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 5.75, dy: 5.75))
+            ring.lineWidth = 1.5
+            ring.stroke()
         }
 
         /// Quiet until you need it: a pale snowflake normally, the full lilac

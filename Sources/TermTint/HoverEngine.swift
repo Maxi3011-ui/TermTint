@@ -33,6 +33,8 @@ final class HoverEngine {
         var tint: Tint
         /// Set by a click, cleared when the pointer leaves and comes back.
         var dismissed: Bool = false
+        /// A red dot you set by hand — see Marker.swift.
+        var isMarked = false
         /// The session's tty, looked up when it is first needed for freezing.
         var tty: String?
 
@@ -73,6 +75,8 @@ final class HoverEngine {
     private let panel = OverlayPanel()
     private let freezer = Freezer()
     private let freezeButton = FreezeButtonPanel()
+    private let markButton = MarkButtonPanel()
+    private var markDots: [WindowRef: MarkDot] = [:]
     private var veils: [WindowRef: FreezeVeil] = [:]
 
     private var states: [WindowRef: WindowState] = [:]
@@ -112,6 +116,10 @@ final class HoverEngine {
         freezeButton.onClick = { [weak self] in
             guard let self, let hovered = self.hovered else { return }
             self.toggleFreeze(hovered)
+        }
+        markButton.onClick = { [weak self] in
+            guard let self, let hovered = self.hovered else { return }
+            self.toggleMark(hovered)
         }
         watcher.onEvent = { [weak self] event in self?.handle(event) }
         watcher.start()
@@ -182,7 +190,8 @@ final class HoverEngine {
                            // waiting for our own bookkeeping to catch up only
                            // adds a race.
                            isMinimized: state.isMinimized,
-                           isFrozen: freezer.isFrozen(state.tty))
+                           isFrozen: freezer.isFrozen(state.tty),
+                           isMarked: state.isMarked)
         }
     }
 
@@ -311,6 +320,7 @@ final class HoverEngine {
             pointerMoved()
             updateOcclusion()
             updateVeils()
+            updateMarkDots()
 
         case .titleChanged(let ref):
             guard states[ref] != nil else { return }
@@ -398,6 +408,7 @@ final class HoverEngine {
         invalidateWindowList()
         pointerMoved(force: true)
         updateVeils()
+        updateMarkDots()
     }
 
     /// Retries a failed or suspiciously empty window query a few times, then
@@ -425,6 +436,7 @@ final class HoverEngine {
         pointerMoved(force: true)
         updateOcclusion()
         updateVeils()
+        updateMarkDots()
     }
 
     @objc private func screensChanged() {
@@ -458,6 +470,8 @@ final class HoverEngine {
                 state.tint = Tint(hue: CGFloat(stored.hue), role: role)
             }
         }
+        // A mark is a decision about the window, so it comes back with it.
+        state.isMarked = MarkStore.isMarked(anyOf: markKeys(for: state))
         return state
     }
 
@@ -634,6 +648,7 @@ final class HoverEngine {
             guard self.hovered == nil else { return }
             Log.write("  ausblenden: Zeiger hat alle Fenster verlassen")
             self.freezeButton.hide()
+            self.markButton.hide()
             self.panel.fadeOut()
         }
         pendingHide = work
@@ -644,6 +659,7 @@ final class HoverEngine {
     private func hideNow() {
         cancelHide()
         freezeButton.hide()
+        markButton.hide()
         panel.hideImmediately()
     }
 
@@ -662,6 +678,7 @@ final class HoverEngine {
         guard !state.dismissed else {
             Log.write("  ausblenden: Fenster ist abgewählt")
             freezeButton.hide()
+            markButton.hide()
             panel.fadeOut()
             return
         }
@@ -681,9 +698,17 @@ final class HoverEngine {
 
     private func placeFreezeButton(for state: WindowState) {
         let slot = panel.overlay.freezeSlot
-        guard slot != .zero, editing == nil else { freezeButton.hide(); return }
+        guard slot != .zero, editing == nil else {
+            freezeButton.hide()
+            markButton.hide()
+            return
+        }
         freezeButton.show(at: slot.offsetBy(dx: panel.frame.minX, dy: panel.frame.minY),
                           frozen: freezer.isFrozen(state.tty), tint: state.tint)
+        let mark = panel.overlay.markSlot
+        guard mark != .zero else { markButton.hide(); return }
+        markButton.show(at: mark.offsetBy(dx: panel.frame.minX, dy: panel.frame.minY),
+                        marked: state.isMarked)
     }
 
     private func updateOcclusion() {
@@ -786,6 +811,7 @@ final class HoverEngine {
         guard states[ref] != nil else { return }
         editing = ref
         freezeButton.hide()
+        markButton.hide()
         previousApp = NSWorkspace.shared.frontmostApplication
 
         panel.ignoresMouseEvents = false
@@ -871,6 +897,41 @@ final class HoverEngine {
             states[ref]?.activity.thaw()
         }
         updateVeils()
+        updateMarkDots()
+        redrawHovered()
+    }
+
+    /// The two keys a mark is filed under — the same pair as a name, so it
+    /// survives a restart of this app and, as far as it can, of Terminal.
+    private func markKeys(for state: WindowState) -> [String] {
+        var keys: [String] = []
+        if let id = state.windowID { keys.append(LabelStore.windowKey(id)) }
+        if let path = LabelStore.pathKey(directory: state.directory, autoName: state.autoName) {
+            keys.append(path)
+        }
+        return keys
+    }
+
+    /// Sets or clears the red dot. Reached from the button in the overlay and
+    /// from the one in each row of the ⌥Tab overview.
+    func toggleMark(_ ref: WindowRef) {
+        guard var state = states[ref] else { return }
+        if state.windowID == nil { state.windowID = windowID(matching: state.frame) }
+        state.isMarked.toggle()
+        states[ref] = state
+        MarkStore.set(state.isMarked, for: markKeys(for: state))
+        Log.write("Markierung: \(state.displayName) -> \(state.isMarked ? "gesetzt" : "entfernt")")
+        updateMarkDots()
+        if hovered == ref { placeFreezeButton(for: state) }
+        redrawHovered()
+    }
+
+    var markedCount: Int { states.values.filter(\.isMarked).count }
+
+    func clearAllMarks() {
+        for ref in Array(states.keys) { states[ref]?.isMarked = false }
+        MarkStore.clear()
+        updateMarkDots()
         redrawHovered()
     }
 
@@ -895,6 +956,7 @@ final class HoverEngine {
         }
         states[ref] = state
         updateVeils()
+        updateMarkDots()
         redrawHovered()
     }
 
@@ -916,6 +978,27 @@ final class HoverEngine {
             for tty in freezer.frozen.keys where !open.contains(tty) { freezer.thaw(tty) }
         }
         updateVeils()
+        updateMarkDots()
+    }
+
+    /// The dot has to be visible when nothing is hovered, so it is its own
+    /// little window stacked directly above the one it belongs to.
+    private func updateMarkDots() {
+        for (ref, state) in states {
+            guard state.isMarked, state.isOnScreen, !state.isMinimized,
+                  let id = state.windowID else {
+                markDots[ref]?.hide()
+                if !state.isMarked { markDots[ref] = nil }
+                continue
+            }
+            let dot = markDots[ref] ?? MarkDot()
+            markDots[ref] = dot
+            dot.show(over: state.frame, titleBarHeight: state.titleBarHeight, windowID: id)
+        }
+        for ref in markDots.keys where states[ref] == nil {
+            markDots[ref]?.hide()
+            markDots[ref] = nil
+        }
     }
 
     /// Driven by the same events as everything else: list, focus, geometry
