@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switcher.onToggleMark = { [engine] ref in engine.toggleMark(ref) }
         switcher.onRestoreAll = { [engine] in engine.restoreAllMinimized() }
         switcher.onMinimizeFrozen = { [engine] in engine.minimizeAllFrozen() }
+        switcher.onRaiseMarked = { [engine] in engine.raiseAllMarked() }
         switcher.onApplyPending = { [engine] in engine.applyPendingWindowStates() }
 
         if AXIsProcessTrusted() {

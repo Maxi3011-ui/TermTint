@@ -928,6 +928,20 @@ final class HoverEngine {
 
     var markedCount: Int { states.values.filter(\.isMarked).count }
 
+    /// Brings every marked window to the front, minimised ones included —
+    /// `raise` takes them out of the Dock first. Raised in list order, so the
+    /// last one ends up on top and the rest stack behind it.
+    func raiseAllMarked() {
+        for (ref, state) in states where state.isMarked {
+            pendingMinimize[ref] = false
+            states[ref]?.isMinimized = false
+            states[ref]?.isOnScreen = true
+            watcher.raise(ref)
+            Log.write("Nach vorn geholt: \(state.displayName)")
+        }
+        updateMarkDots()
+    }
+
     func clearAllMarks() {
         for ref in Array(states.keys) { states[ref]?.isMarked = false }
         MarkStore.clear()

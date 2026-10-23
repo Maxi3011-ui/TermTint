@@ -43,6 +43,8 @@ final class Switcher {
     var onRestoreAll: (() -> Void)?
     /// Puts every paused window into the Dock.
     var onMinimizeFrozen: (() -> Void)?
+    /// Brings every marked window to the front.
+    var onRaiseMarked: (() -> Void)?
     /// Called once the overview is closed, so window changes are applied while
     /// no modifier key is held.
     var onApplyPending: (() -> Void)?
@@ -69,6 +71,18 @@ final class Switcher {
         view.onMarkClick = { [weak self] index in self?.toggleMark(index) }
         view.onRestoreAll = { [weak self] in self?.restoreAll() }
         view.onMinimizeFrozen = { [weak self] in self?.minimizeFrozen() }
+        view.onRaiseMarked = { [weak self] in self?.raiseMarked() }
+    }
+
+    /// Unlike the other footer actions this one closes the overview: you
+    /// asked for those windows to be in front, so the panel has to get out of
+    /// the way. Terminal is already frontmost by then — raising did that — so
+    /// the previously active app must not be brought back over them.
+    private func raiseMarked() {
+        guard isShowing else { return }
+        onRaiseMarked?()
+        previousApp = nil
+        dismiss(activating: false)
     }
 
     private func minimizeFrozen() {
@@ -114,6 +128,7 @@ final class Switcher {
         view.configure(entries: entries, selected: selection)
         view.setMinimizedCount(entries.filter(\.isMinimized).count)
         view.setFrozenCount(entries.filter { $0.isFrozen && !$0.isMinimized }.count)
+        view.setMarkedCount(entries.filter(\.isMarked).count)
         view.needsDisplay = true
     }
 
@@ -178,6 +193,7 @@ final class Switcher {
         view.configure(entries: entries, selected: selection)
         view.setMinimizedCount(entries.filter(\.isMinimized).count)
         view.setFrozenCount(entries.filter { $0.isFrozen && !$0.isMinimized }.count)
+        view.setMarkedCount(entries.filter(\.isMarked).count)
         view.setOverlayEnabled(isOverlayEnabled?() ?? true)
         panel.present(size: view.fittingSize)
 
@@ -379,6 +395,11 @@ final class SwitcherView: NSView {
         set { footer.onMinimizeFrozen = newValue }
     }
 
+    var onRaiseMarked: (() -> Void)? {
+        get { footer.onRaiseMarked }
+        set { footer.onRaiseMarked = newValue }
+    }
+
     private let effect = NSVisualEffectView()
     private let scrim = NSView()
     private let rows = RowsView()
@@ -437,6 +458,10 @@ final class SwitcherView: NSView {
         footer.setFrozenCount(count)
     }
 
+    func setMarkedCount(_ count: Int) {
+        footer.setMarkedCount(count)
+    }
+
     override var fittingSize: CGSize {
         CGSize(width: Metrics.width,
                height: rows.contentHeight + Metrics.padding * 2 + Metrics.footerHeight)
@@ -463,16 +488,20 @@ final class SwitcherView: NSView {
         var onToggle: (() -> Void)?
         var onRestoreAll: (() -> Void)?
         var onMinimizeFrozen: (() -> Void)?
+        var onRaiseMarked: (() -> Void)?
 
         private var isOn = true
         private var minimizedCount = 0
         /// Frozen and still on screen — the ones the button can put away.
         private var frozenCount = 0
+        private var markedCount = 0
         private var tracking: NSTrackingArea?
 
         /// The footer holds two different things — an action on the left and a
         /// setting on the right — so the pointer has to say which one it means.
-        private enum Zone { case none, restore, freeze, toggle }
+        /// The footer holds a row of actions on the left and one setting on
+        /// the right; the pointer has to say which it means.
+        private enum Zone: Equatable { case none, left(Int), toggle }
         private var hotZone: Zone = .none
 
         /// Animatable through the AppKit animator proxy, which needs both the
@@ -514,52 +543,72 @@ final class SwitcherView: NSView {
             needsDisplay = true
         }
 
-        private var restoreTitle: String {
-            minimizedCount > 1 ? "Alle einblenden (\(minimizedCount))" : "Alle einblenden"
+        func setMarkedCount(_ count: Int) {
+            guard count != markedCount else { return }
+            markedCount = count
+            needsDisplay = true
         }
 
         private var restoreFont: NSFont { .systemFont(ofSize: 12, weight: .medium) }
 
-        private var restoreRect: CGRect {
-            guard minimizedCount > 0 else { return .zero }
-            return CGRect(x: Metrics.padding + 3, y: bounds.midY - 14,
-                          width: pillWidth(for: restoreTitle), height: 28)
+        /// One action in the left-hand row. They come and go with what there
+        /// is to do, so the row is laid out rather than hard-coded.
+        private struct Item {
+            let symbol: String
+            let long: String
+            let count: Int
+            let colour: NSColor?
+            let run: (FooterView) -> Void
         }
 
-        private var freezeTitleLong: String {
-            frozenCount > 1 ? "Eingefrorene minimieren (\(frozenCount))" : "Eingefrorene minimieren"
+        private var items: [Item] {
+            var result: [Item] = []
+            if minimizedCount > 0 {
+                result.append(Item(symbol: "macwindow.on.rectangle", long: "Alle einblenden",
+                                   count: minimizedCount, colour: nil) { $0.onRestoreAll?() })
+            }
+            if frozenCount > 0 {
+                result.append(Item(symbol: "snowflake", long: "Eingefrorene minimieren",
+                                   count: frozenCount, colour: FreezeButtonPanel.lilac) {
+                    $0.onMinimizeFrozen?()
+                })
+            }
+            if markedCount > 0 {
+                result.append(Item(symbol: "circle.fill", long: "Markierte nach vorn",
+                                   count: markedCount, colour: MarkLook.red) { $0.onRaiseMarked?() })
+            }
+            return result
         }
 
-        /// Where the left-hand buttons end: the right-hand group owns
+        /// Where the left-hand row must end: the switch and its label own
         /// everything past this, and the two must never meet.
         private var leftLimit: CGFloat {
             let switchX = bounds.maxX - Metrics.padding - 15 - Switch.width
             return switchX - 82 - 98 - 18
         }
 
-        private func pillWidth(for title: String, glyph: Bool = false) -> CGFloat {
+        private func width(of title: String) -> CGFloat {
             ceil((title as NSString).size(withAttributes: [.font: restoreFont]).width)
-                + 26 + (glyph ? 20 : 0)
         }
 
-        /// Both buttons rarely show at once — minimising the frozen ones turns
-        /// them into restorable ones. When it does happen there is no room for
-        /// two full labels, so this one shrinks to a snowflake and a count.
-        private var freezeIsCompact: Bool {
-            guard minimizedCount > 0 else { return false }
-            let start = restoreRect.maxX + 8
-            return start + pillWidth(for: freezeTitleLong) > leftLimit
-        }
-
-        private var freezeTitle: String {
-            freezeIsCompact ? "\(frozenCount)" : freezeTitleLong
-        }
-
-        private var freezeRect: CGRect {
-            guard frozenCount > 0 else { return .zero }
-            let start = minimizedCount > 0 ? restoreRect.maxX + 8 : Metrics.padding + 3
-            return CGRect(x: start, y: bounds.midY - 14,
-                          width: pillWidth(for: freezeTitle, glyph: true), height: 28)
+        /// Full labels while there is only one thing to do; as soon as there
+        /// are two, every button shrinks to its symbol and a number. Mixing
+        /// the two looks accidental, and three full labels never fit.
+        private func layoutLeft() -> [(Item, CGRect, String)] {
+            let all = items
+            guard !all.isEmpty else { return [] }
+            let compact = all.count > 1
+            var result: [(Item, CGRect, String)] = []
+            var x = Metrics.padding + 3
+            for item in all {
+                let title = compact ? "\(item.count)" : (item.count > 1 ? "\(item.long) (\(item.count))" : item.long)
+                let w = 13 + 6 + width(of: title) + 26
+                result.append((item, CGRect(x: x, y: bounds.midY - 14, width: w, height: 28), title))
+                x += w + 7
+            }
+            // Should the row ever outgrow its space, drop the trailing ones
+            // rather than let them slide under the switch.
+            return result.filter { $0.1.maxX <= leftLimit }
         }
 
         // MARK: - Pointer
@@ -592,19 +641,19 @@ final class SwitcherView: NSView {
 
         override func mouseUp(with event: NSEvent) {
             let point = convert(event.locationInWindow, from: nil)
-            if minimizedCount > 0, restoreRect.contains(point) {
-                onRestoreAll?()
-            } else if frozenCount > 0, freezeRect.contains(point) {
-                onMinimizeFrozen?()
+            if let hit = layoutLeft().first(where: { $0.1.contains(point) }) {
+                hit.0.run(self)
             } else {
                 onToggle?()
             }
         }
 
         private func updateZone(_ point: CGPoint) {
-            if minimizedCount > 0, restoreRect.contains(point) { setZone(.restore); return }
-            if frozenCount > 0, freezeRect.contains(point) { setZone(.freeze); return }
-            setZone(.toggle)
+            if let index = layoutLeft().firstIndex(where: { $0.1.contains(point) }) {
+                setZone(.left(index))
+            } else {
+                setZone(.toggle)
+            }
         }
 
         private func setZone(_ zone: Zone) {
@@ -636,8 +685,7 @@ final class SwitcherView: NSView {
             }
 
             drawRight(labelRect: labelRect, stateRect: stateRect, switchX: switchX)
-            drawRestoreButton()
-            drawFreezeButton()
+            drawLeftButtons()
         }
 
         private func drawRight(labelRect: CGRect, stateRect: CGRect, switchX: CGFloat) {
@@ -676,59 +724,47 @@ final class SwitcherView: NSView {
             NSBezierPath(ovalIn: knob).fill()
         }
 
-        private func drawRestoreButton() {
-            guard minimizedCount > 0 else { return }
-            let rect = restoreRect
-            let hot = hotZone == .restore
+        private func drawLeftButtons() {
+            for (index, entry) in layoutLeft().enumerated() {
+                let (item, rect, title) = entry
+                let hot = hotZone == .left(index)
+                let accent = item.colour
 
-            if hot {
-                NSColor(white: 1, alpha: 0.12).setFill()
-                NSBezierPath(roundedRect: rect, xRadius: 9, yRadius: 9).fill()
-            }
-
-            let centred = NSMutableParagraphStyle()
-            centred.alignment = .center
-            NSAttributedString(string: restoreTitle, attributes: [
-                .font: restoreFont,
-                .foregroundColor: NSColor(white: 1, alpha: hot ? 0.92 : 0.55),
-                .paragraphStyle: centred,
-            ]).draw(with: CGRect(x: rect.minX, y: rect.midY - 8,
-                                 width: rect.width, height: 16),
-                    options: [.usesLineFragmentOrigin])
-        }
-
-        /// Puts every paused session into the Dock in one go — the point of
-        /// freezing a window is usually that you want it out of the way.
-        private func drawFreezeButton() {
-            guard frozenCount > 0 else { return }
-            let rect = freezeRect
-            let hot = hotZone == .freeze
-
-            FreezeButtonPanel.lilac.withAlphaComponent(hot ? 0.34 : 0.20).setFill()
-            NSBezierPath(roundedRect: rect, xRadius: 9, yRadius: 9).fill()
-
-            let colour = NSColor(white: 1, alpha: hot ? 0.95 : 0.72)
-            var textLeft = rect.minX + 13
-
-            if let symbol = NSImage(systemSymbolName: "snowflake", accessibilityDescription: nil)?
-                .withSymbolConfiguration(.init(pointSize: 12, weight: .semibold)) {
-                let glyph = NSImage(size: symbol.size, flipped: false) { bounds in
-                    symbol.draw(in: bounds)
-                    colour.set()
-                    bounds.fill(using: .sourceAtop)
-                    return true
+                if let accent {
+                    accent.withAlphaComponent(hot ? 0.34 : 0.20).setFill()
+                    NSBezierPath(roundedRect: rect, xRadius: 9, yRadius: 9).fill()
+                } else if hot {
+                    NSColor(white: 1, alpha: 0.12).setFill()
+                    NSBezierPath(roundedRect: rect, xRadius: 9, yRadius: 9).fill()
                 }
-                glyph.draw(in: CGRect(x: textLeft, y: rect.midY - symbol.size.height / 2,
-                                      width: symbol.size.width, height: symbol.size.height))
-                textLeft += symbol.size.width + 6
-            }
 
-            NSAttributedString(string: freezeTitle, attributes: [
-                .font: restoreFont,
-                .foregroundColor: colour,
-            ]).draw(with: CGRect(x: textLeft, y: rect.midY - 8,
-                                 width: rect.maxX - textLeft, height: 16),
-                    options: [.usesLineFragmentOrigin])
+                let colour = NSColor(white: 1, alpha: hot ? 0.95 : (accent == nil ? 0.55 : 0.72))
+                var textLeft = rect.minX + 13
+
+                // The mark keeps its own red even here; it is the whole point
+                // of the thing, and a white dot would say nothing.
+                let glyphColour = item.symbol == "circle.fill" ? MarkLook.red : colour
+                if let symbol = NSImage(systemSymbolName: item.symbol, accessibilityDescription: nil)?
+                    .withSymbolConfiguration(.init(pointSize: item.symbol == "circle.fill" ? 9 : 12,
+                                                   weight: .semibold)) {
+                    let glyph = NSImage(size: symbol.size, flipped: false) { bounds in
+                        symbol.draw(in: bounds)
+                        glyphColour.set()
+                        bounds.fill(using: .sourceAtop)
+                        return true
+                    }
+                    glyph.draw(in: CGRect(x: textLeft, y: rect.midY - symbol.size.height / 2,
+                                          width: symbol.size.width, height: symbol.size.height))
+                    textLeft += symbol.size.width + 6
+                }
+
+                NSAttributedString(string: title, attributes: [
+                    .font: restoreFont,
+                    .foregroundColor: colour,
+                ]).draw(with: CGRect(x: textLeft, y: rect.midY - 8,
+                                     width: rect.maxX - textLeft, height: 16),
+                        options: [.usesLineFragmentOrigin])
+            }
         }
     }
 
