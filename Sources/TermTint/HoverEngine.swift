@@ -970,10 +970,15 @@ final class HoverEngine {
     func isArrangementActive(_ kind: Arrangement) -> Bool { snapshots[kind] != nil }
 
     /// Remembers where the given windows are, so the next press can undo it.
+    ///
+    /// Only ever one arrangement is undoable. Once a second one has been
+    /// applied, the first one's snapshot describes a state that no longer
+    /// exists — keeping its arrow around only offers to throw the windows
+    /// back somewhere nobody asked for.
     private func remember(_ kind: Arrangement, _ refs: [WindowRef]) {
         var frames: [WindowRef: CGRect] = [:]
         for ref in refs { frames[ref] = states[ref]?.frame }
-        snapshots[kind] = frames
+        snapshots = [kind: frames]
     }
 
     /// Puts the windows back and forgets the arrangement.
