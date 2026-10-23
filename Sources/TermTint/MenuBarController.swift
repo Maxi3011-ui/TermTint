@@ -68,6 +68,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         unmark.isEnabled = engine.markedCount > 0
         menu.addItem(unmark)
 
+        let slots = NSMenuItem(title: "Plätze neu vergeben",
+                               action: #selector(clearSlots), keyEquivalent: "")
+        slots.target = self
+        menu.addItem(slots)
+
         let clear = NSMenuItem(title: "Alle Namen löschen", action: #selector(clearNames), keyEquivalent: "")
         clear.target = self
         clear.isEnabled = engine.windowCount > 0
@@ -109,6 +114,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func thawAll() {
         engine.thawAll()
+    }
+
+    @objc private func clearSlots() {
+        engine.clearSlots()
     }
 
     @objc private func clearMarks() {

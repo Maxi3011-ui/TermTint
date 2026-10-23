@@ -969,6 +969,47 @@ final class HoverEngine {
     /// of windows is usually to work with all of them at once.
     func isArrangementActive(_ kind: Arrangement) -> Bool { snapshots[kind] != nil }
 
+    /// The order windows are laid out in — stable across runs, so a session
+    /// lands in the same cell today as it did yesterday.
+    ///
+    /// Windows that already have a place keep it. Ones that have never been
+    /// arranged are appended behind them, in reading order among themselves,
+    /// so a new window never pushes the familiar ones around.
+    private func arrangementOrder(_ refs: [WindowRef]) -> [WindowRef] {
+        var known: [(WindowRef, Int)] = []
+        var fresh: [WindowRef] = []
+        for ref in refs {
+            guard let state = states[ref] else { continue }
+            if let rank = SlotStore.rank(anyOf: markKeys(for: state)) {
+                known.append((ref, rank))
+            } else {
+                fresh.append(ref)
+            }
+        }
+
+        fresh.sort { lhs, rhs in
+            guard let a = states[lhs]?.frame, let b = states[rhs]?.frame else { return false }
+            if abs(a.maxY - b.maxY) > 40 { return a.maxY > b.maxY }
+            return a.minX < b.minX
+        }
+
+        var next = SlotStore.highest + 1
+        for ref in fresh {
+            guard let state = states[ref] else { continue }
+            SlotStore.put(next, for: markKeys(for: state))
+            known.append((ref, next))
+            next += 1
+        }
+
+        return known.sorted { $0.1 < $1.1 }.map(\.0)
+    }
+
+    /// Forgets every remembered place, so the next arrangement starts fresh.
+    func clearSlots() {
+        SlotStore.clear()
+        Log.write("Plätze zurückgesetzt")
+    }
+
     /// Remembers where the given windows are, so the next press can undo it.
     ///
     /// Only ever one arrangement is undoable. Once a second one has been
@@ -997,28 +1038,23 @@ final class HoverEngine {
         let marked = states.filter { $0.value.isMarked }
         guard !marked.isEmpty else { return }
 
-        // Keep the reading order people already have in their head: top row
-        // first, left to right.
-        let ordered = marked.sorted { lhs, rhs in
-            if abs(lhs.value.frame.maxY - rhs.value.frame.maxY) > 40 {
-                return lhs.value.frame.maxY > rhs.value.frame.maxY
-            }
-            return lhs.value.frame.minX < rhs.value.frame.minX
-        }
+        // The same remembered order as any other arrangement, so a marked
+        // session sits where it always sits.
+        let ordered = arrangementOrder(Array(marked.keys))
 
-        for (ref, _) in ordered {
+        for ref in ordered {
             pendingMinimize[ref] = false
             states[ref]?.isMinimized = false
             states[ref]?.isOnScreen = true
             watcher.raise(ref)
         }
 
-        remember(.tileMarked, ordered.map(\.key))
+        remember(.tileMarked, ordered)
         let area = tilingScreen().visibleFrame
         let frames = Tiling.grid(count: ordered.count, in: area)
-        for (index, entry) in ordered.enumerated() where index < frames.count {
-            watcher.setFrame(frames[index], for: entry.key)
-            states[entry.key]?.frame = frames[index]
+        for (index, ref) in ordered.enumerated() where index < frames.count {
+            watcher.setFrame(frames[index], for: ref)
+            states[ref]?.frame = frames[index]
         }
         Log.write("Markierte angeordnet: \(ordered.count) auf \(Int(area.width))x\(Int(area.height))")
         refreshAttachments()
@@ -1031,19 +1067,14 @@ final class HoverEngine {
         let visible = states.filter { $0.value.isOnScreen && !$0.value.isMinimized }
         guard !visible.isEmpty else { return }
 
-        let ordered = visible.sorted { lhs, rhs in
-            if abs(lhs.value.frame.maxY - rhs.value.frame.maxY) > 40 {
-                return lhs.value.frame.maxY > rhs.value.frame.maxY
-            }
-            return lhs.value.frame.minX < rhs.value.frame.minX
-        }
-        remember(.tileAll, ordered.map(\.key))
+        let ordered = arrangementOrder(Array(visible.keys))
+        remember(.tileAll, ordered)
 
         let area = tilingScreen().visibleFrame
         let frames = Tiling.grid(count: ordered.count, in: area)
-        for (index, entry) in ordered.enumerated() where index < frames.count {
-            watcher.setFrame(frames[index], for: entry.key)
-            states[entry.key]?.frame = frames[index]
+        for (index, ref) in ordered.enumerated() where index < frames.count {
+            watcher.setFrame(frames[index], for: ref)
+            states[ref]?.frame = frames[index]
         }
         Log.write("Alle angeordnet: \(ordered.count) auf \(Int(area.width))x\(Int(area.height))")
         refreshAttachments()
