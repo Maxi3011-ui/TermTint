@@ -26,7 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switcher.onTileAll = { [engine] in engine.tileAllWindows() }
         switcher.onDefaultSize = { [engine] in engine.resizeAllToDefault() }
         switcher.activeArrangements = { [engine] in
-            Set([Arrangement.tileAll, .tileMarked, .defaultSize].filter(engine.isArrangementActive))
+            Set([Arrangement.tileAll, .defaultSize].filter(engine.isArrangementActive))
         }
         switcher.onApplyPending = { [engine] in engine.applyPendingWindowStates() }
 

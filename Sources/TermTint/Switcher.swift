@@ -618,11 +618,10 @@ final class SwitcherView: NSView {
                 })
             }
             if markedCount > 0 {
-                let on = active.contains(.tileMarked)
-                result.append(Item(symbol: on ? "arrow.uturn.backward" : "circle.fill",
-                                   label: on ? "Markierte zurücklegen" : "Markierte nach vorn",
-                                   count: on ? 0 : markedCount,
-                                   colour: MarkLook.red) { $0.onRaiseMarked?() })
+                // No undo here: this one is a move, not a state. Pressing it
+                // again should simply fetch them again.
+                result.append(Item(symbol: "circle.fill", label: "Markierte nach vorn",
+                                   count: markedCount, colour: MarkLook.red) { $0.onRaiseMarked?() })
             }
             let tiled = active.contains(.tileAll)
             result.append(Item(symbol: tiled ? "arrow.uturn.backward" : "square.grid.3x3",

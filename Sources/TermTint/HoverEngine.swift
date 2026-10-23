@@ -1018,12 +1018,9 @@ final class HoverEngine {
 
     /// Someone moved or resized a window that belongs to a live arrangement.
     ///
-    /// The two arrangements want different things here. "Everything on one
-    /// screen" is a single picture: break one piece out of it and the picture
-    /// is gone, so all of it goes back. Bringing the marked ones forward is
-    /// not a picture but a move — dragging one window afterwards is normal,
-    /// and the only thing that has to go is the offer to undo, so that the
-    /// next press arranges again instead of asking to take something back.
+    /// "Everything on one screen" is a single picture: break one piece out of
+    /// it and the picture is gone, so all of it goes back. Setting every
+    /// window to the default size only loses its offer to be taken back.
     private func noteDisturbance(_ ref: WindowRef, frame: CGRect) {
         guard !isArranging, !snapshots.isEmpty else { return }
         for (kind, snapshot) in snapshots {
@@ -1111,7 +1108,6 @@ final class HoverEngine {
     }
 
     func raiseAllMarked() {
-        if isArrangementActive(.tileMarked) { undo(.tileMarked); return }
         let marked = states.filter { $0.value.isMarked }
         guard !marked.isEmpty else { return }
 
@@ -1126,7 +1122,6 @@ final class HoverEngine {
             watcher.raise(ref)
         }
 
-        remember(.tileMarked, ordered)
         let area = tilingScreen().visibleFrame
         let frames = Tiling.grid(count: ordered.count, in: area)
         for (index, ref) in ordered.enumerated() where index < frames.count {
@@ -1134,7 +1129,6 @@ final class HoverEngine {
             states[ref]?.frame = frames[index]
         }
         Log.write("Markierte angeordnet: \(ordered.count) auf \(Int(area.width))x\(Int(area.height))")
-        recordApplied(.tileMarked)
         refreshAttachments()
     }
 
