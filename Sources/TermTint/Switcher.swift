@@ -279,6 +279,13 @@ final class Switcher {
 
     private func handleFlags(_ event: NSEvent) {
         guard isShowing, !event.modifierFlags.contains(.option) else { return }
+        // Same gesture as for the windows themselves: point at a thing, let
+        // go, it happens. Nothing here has to be clicked.
+        if let action = view.actionUnderPointer() {
+            action()
+            dismiss(activating: false)
+            return
+        }
         dismiss(activating: true)
     }
 
@@ -431,6 +438,11 @@ final class SwitcherView: NSView {
 
     func setActive(_ arrangements: Set<Arrangement>) {
         footer.setActive(arrangements)
+    }
+
+    /// A control under the pointer takes precedence over switching windows.
+    func actionUnderPointer() -> (() -> Void)? {
+        footer.actionUnderPointer() ?? rows.actionUnderPointer()
     }
 
     private let effect = NSVisualEffectView()
@@ -645,6 +657,30 @@ final class SwitcherView: NSView {
             ceil((title as NSString).size(withAttributes: [.font: restoreFont]).width)
         }
 
+        /// The switch and its two labels. Only this counts as the switch —
+        /// a click anywhere in the empty footer used to flip it.
+        private var toggleRect: CGRect {
+            let switchX = bounds.maxX - Metrics.padding - 15 - Switch.width
+            let left = switchX - 82 - 98 - 10
+            return CGRect(x: left, y: 5, width: bounds.maxX - Metrics.padding - left,
+                          height: bounds.height - 10)
+        }
+
+        /// What releasing ⌥ over this spot should do, if anything.
+        func actionUnderPointer() -> (() -> Void)? {
+            switch hotZone {
+            case .left(let index):
+                let row = layoutLeft()
+                guard row.indices.contains(index) else { return nil }
+                let run = row[index].0.run
+                return { [weak self] in if let self { run(self) } }
+            case .toggle:
+                return { [weak self] in self?.onToggle?() }
+            case .none:
+                return nil
+            }
+        }
+
         private func layoutLeft() -> [(Item, CGRect)] {
             var result: [(Item, CGRect)] = []
             var x = Metrics.padding + 3
@@ -690,7 +726,7 @@ final class SwitcherView: NSView {
             let point = convert(event.locationInWindow, from: nil)
             if let hit = layoutLeft().first(where: { $0.1.contains(point) }) {
                 hit.0.run(self)
-            } else {
+            } else if toggleRect.contains(point) {
                 onToggle?()
             }
         }
@@ -698,8 +734,10 @@ final class SwitcherView: NSView {
         private func updateZone(_ point: CGPoint) {
             if let index = layoutLeft().firstIndex(where: { $0.1.contains(point) }) {
                 setZone(.left(index))
-            } else {
+            } else if toggleRect.contains(point) {
                 setZone(.toggle)
+            } else {
+                setZone(.none)
             }
         }
 
@@ -907,6 +945,15 @@ final class SwitcherView: NSView {
         /// finds it in the same place in every line.
         static func freezeFrame(in row: CGRect) -> CGRect {
             CGRect(x: row.maxX - 12 - 22, y: row.midY - 11, width: 22, height: 22)
+        }
+
+        /// What releasing ⌥ over this row should do instead of switching to
+        /// the window: the little buttons come first, the row itself last.
+        func actionUnderPointer() -> (() -> Void)? {
+            if let index = hotMark { return { [weak self] in self?.onMarkClick?(index) } }
+            if let index = hotFreeze { return { [weak self] in self?.onFreezeClick?(index) } }
+            if let index = hotDot { return { [weak self] in self?.onDotClick?(index) } }
+            return nil
         }
 
         /// Left of the freeze button, same size, same rhythm.
