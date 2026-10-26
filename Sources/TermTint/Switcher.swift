@@ -282,6 +282,7 @@ final class Switcher {
         // Same gesture as for the windows themselves: point at a thing, let
         // go, it happens. Nothing here has to be clicked.
         if let action = view.actionUnderPointer() {
+            Log.write("⌥ losgelassen über einem Knopf — Knopf statt Fenster")
             action()
             dismiss(activating: false)
             return
@@ -300,8 +301,10 @@ final class Switcher {
         entries = []
 
         if activating, let target {
+            Log.write("Übersicht schließt: \(target.name) nach vorn")
             onActivate?(target.ref)
         } else if let previousApp, !previousApp.isTerminated {
+            Log.write("Übersicht schließt ohne Wechsel (zurück zu \(previousApp.localizedName ?? "?"))")
             previousApp.activate()
         }
         previousApp = nil

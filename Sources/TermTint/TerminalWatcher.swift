@@ -321,6 +321,7 @@ final class TerminalWatcher {
         }
         let id = AX.windowNumber(of: ref.element)
         let raised = AXUIElementPerformAction(ref.element, kAXRaiseAction as CFString)
+        Log.write("Nach vorn: #\(id.map(String.init) ?? "?") AX=\(raised.rawValue) prüfen=\(verify)")
         AXUIElementSetAttributeValue(ref.element, kAXMainAttribute as CFString, kCFBooleanTrue)
         if let pid, let app = NSRunningApplication(processIdentifier: pid) {
             app.activate()
@@ -338,22 +339,68 @@ final class TerminalWatcher {
         // would shuffle the order rather than settle it.
         guard verify else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-            guard let self, let id, !self.isFrontmost(id) else { return }
+            guard let self, let id else { Log.write("Nach vorn: keine Fenster-ID — nichts zu prüfen"); return }
+            guard !self.isFrontmost(id) else { Log.write("Nach vorn: angekommen"); return }
             Log.write("Nach vorn: nicht angekommen — über Terminal selbst")
             self.bringToFront(id)
         }
     }
 
-    /// Whether this window is the topmost ordinary window on screen.
-    private func isFrontmost(_ id: Int) -> Bool {
+    /// Says in the log where a window ended up and what is lying over it.
+    private func reportPlacement(of id: Int) {
+        guard Log.isEnabled else { return }
         let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        var above: [(String, CGRect)] = []
         for entry in list {
             guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0,
                   entry[kCGWindowIsOnscreen as String] as? Bool == true,
-                  let pid = entry[kCGWindowOwnerPID as String] as? pid_t,
-                  pid != ProcessInfo.processInfo.processIdentifier
+                  let pid = entry[kCGWindowOwnerPID as String] as? pid_t, pid != ownPID,
+                  let raw = entry[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: raw)
             else { continue }
-            return entry[kCGWindowNumber as String] as? Int == id
+            let owner = entry[kCGWindowOwnerName as String] as? String ?? "?"
+            if entry[kCGWindowNumber as String] as? Int == id {
+                let covering = above.filter {
+                    let shared = $0.1.intersection(bounds)
+                    return !shared.isNull && shared.width > 8 && shared.height > 8
+                }
+                Log.write("Nachgesehen #\(id): steht auf \(Int(bounds.minX)),\(Int(bounds.minY))"
+                    + " \(Int(bounds.width))x\(Int(bounds.height)), \(above.count) Fenster davor,"
+                    + " davon \(covering.count) darüberliegend"
+                    + (covering.isEmpty ? "" : ": " + covering.map(\.0).joined(separator: ", ")))
+                return
+            }
+            above.append((owner, bounds))
+        }
+        Log.write("Nachgesehen #\(id): gar nicht in der Liste sichtbarer Fenster")
+    }
+
+    /// Whether this window is free: nothing ordered above it covers it.
+    ///
+    /// Not "is it the very first in the list" — that was always false. Stage
+    /// Manager keeps a row of its own windows at the top of the list on every
+    /// screen, so the check never passed and the slow way round ran every
+    /// single time.
+    private func isFrontmost(_ id: Int) -> Bool {
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        var above: [CGRect] = []
+        for entry in list {
+            guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0,
+                  entry[kCGWindowIsOnscreen as String] as? Bool == true,
+                  (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0.05,
+                  let pid = entry[kCGWindowOwnerPID as String] as? pid_t, pid != ownPID,
+                  let raw = entry[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: raw)
+            else { continue }
+            if entry[kCGWindowNumber as String] as? Int == id {
+                return !above.contains { overlap in
+                    let shared = overlap.intersection(bounds)
+                    return !shared.isNull && shared.width > 8 && shared.height > 8
+                }
+            }
+            above.append(bounds)
         }
         return false
     }
@@ -371,7 +418,16 @@ final class TerminalWatcher {
         DispatchQueue.global(qos: .userInitiated).async {
             var failure: NSDictionary?
             NSAppleScript(source: source)?.executeAndReturnError(&failure)
-            if let failure { Log.write("Nach vorn über Terminal fehlgeschlagen: \(failure)") }
+            if let failure {
+                Log.write("Nach vorn über Terminal fehlgeschlagen: \(failure)")
+            } else {
+                Log.write("Nach vorn über Terminal erledigt: #\(id)")
+            }
+            // Did it actually land? Half a second later, say plainly where
+            // the window sits and what covers it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.reportPlacement(of: id)
+            }
         }
     }
 
