@@ -617,7 +617,7 @@ final class HoverEngine {
         }
 
         let target = windowUnderPointer(point)
-        if Log.isEnabled {
+        if Log.isEnabled, target != hovered || force {
             Log.write("move \(Int(point.x)),\(Int(point.y)) fenster=\(states.count) "
                 + "kandidaten=\(states.filter { $0.value.frame.contains(point) }.count) "
                 + "ziel=\(target == nil ? "nil" : "ja") vorher=\(hovered == nil ? "nil" : "ja") force=\(force)")
@@ -744,6 +744,7 @@ final class HoverEngine {
             states[ref]?.frame = fresh
         }
 
+        Log.write("  Schleier für \(state.displayName) auf \(Self.describe(state.frame))")
         panel.place(at: state.frame)
         panel.overlay.configure(tint: state.tint,
                                 role: state.role,
@@ -792,6 +793,7 @@ final class HoverEngine {
         let ownWindow = AX.windowNumber(of: ref.element)
         var result: [CGRect] = []
         var foundSelf = false
+        var trace: [String] = []
 
         for entry in currentWindowList() {
             guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0,
@@ -810,6 +812,10 @@ final class HoverEngine {
             // The list runs front to back: once we reach our own window,
             // everything left is behind it.
             let number = entry[kCGWindowNumber as String] as? Int
+            if Log.isEnabled {
+                let owner = entry[kCGWindowOwnerName as String] as? String ?? "?"
+                trace.append("\(owner)#\(number ?? -1) \(Self.describe(cocoa))")
+            }
             if let ownWindow {
                 if number == ownWindow { foundSelf = true; break }
             } else if pid == terminalPID, cocoa.isClose(to: frame, within: Self.matchTolerance) {
@@ -840,8 +846,18 @@ final class HoverEngine {
         // some of it may sit behind us: cutting too much only makes the veil
         // smaller, while cutting too little paints it over a window that is
         // genuinely in front — which is the mistake that is actually visible.
+        if Log.isEnabled {
+            Log.write("Verdeckung für #\(ownWindow.map(String.init) ?? "?") \(Self.describe(frame))"
+                + " gefunden=\(foundSelf) davor=\(trace.count) löcher=\(result.count)")
+            for line in trace { Log.write("    davor: \(line)") }
+            for hole in result { Log.write("    loch:  \(Self.describe(hole)) (relativ)") }
+        }
         if !foundSelf { Log.write("Verdeckung: eigenes Fenster nicht in der Liste") }
         return result
+    }
+
+    private static func describe(_ rect: CGRect) -> String {
+        "\(Int(rect.minX)),\(Int(rect.minY)) \(Int(rect.width))x\(Int(rect.height))"
     }
 
     private func redrawHovered() {

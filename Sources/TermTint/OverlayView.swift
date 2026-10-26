@@ -434,22 +434,17 @@ final class OverlayView: NSView, NSTextFieldDelegate {
         // corner radius already rounds the edge.
         if occluders.isEmpty {
             layer?.mask = nil
-        } else {
-            let path = CGMutablePath()
-            path.addRoundedRect(in: bounds, cornerWidth: Metrics.corner, cornerHeight: Metrics.corner)
-            // Rounded, not square: the window in front has rounded corners
-            // too, and a square hole leaves a hard little bite out of the
-            // colour at each of them.
-            for rect in occluders {
-                path.addRoundedRect(in: rect, cornerWidth: Metrics.corner, cornerHeight: Metrics.corner)
-            }
-
-            let mask = CAShapeLayer()
-            mask.path = path
-            mask.fillRule = .evenOdd
-            mask.fillColor = NSColor.black.cgColor
+        } else if let cut = Self.maskImage(size: bounds.size,
+                                           shape: CGRect(origin: .zero, size: bounds.size),
+                                           holes: occluders,
+                                           scale: window?.backingScaleFactor ?? 2) {
+            let mask = CALayer()
             mask.frame = bounds
+            mask.contents = cut
+            mask.contentsScale = window?.backingScaleFactor ?? 2
             layer?.mask = mask
+        } else {
+            layer?.mask = nil
         }
 
         // The behind-window blur is shaped by the window server, which ignores
@@ -469,16 +464,53 @@ final class OverlayView: NSView, NSTextFieldDelegate {
                                width: bounds.width, height: bounds.height)
         let corner = Metrics.corner
         let cutouts = occluders.map { $0.offsetBy(dx: -origin.x, dy: -origin.y) }
-        effect.maskImage = NSImage(size: size, flipped: false) { _ in
-            let shape = NSBezierPath(roundedRect: shapeRect, xRadius: corner, yRadius: corner)
-            for rect in cutouts {
-                shape.append(NSBezierPath(roundedRect: rect, xRadius: corner, yRadius: corner))
-            }
-            shape.windingRule = .evenOdd
-            NSColor.black.setFill()
-            shape.fill()
+        _ = corner
+        effect.maskImage = Self.nsMaskImage(size: size, shape: shapeRect, holes: cutouts)
+    }
+
+    /// The overlay's shape with the covering windows taken out of it.
+    ///
+    /// Each hole is cleared on its own, never collected into one path filled
+    /// by the even-odd rule. Even-odd counts crossings: an area inside the
+    /// outline and inside *two* holes came out odd again and was filled back
+    /// in — so wherever two windows in front of the hovered one overlapped
+    /// each other, the veil reappeared right on top of them. That is the
+    /// rectangle that looked as if the overlay had slipped forward.
+    private static func draw(shape: CGRect, holes: [CGRect], into ctx: CGContext) {
+        let corner = Metrics.corner
+        ctx.setFillColor(NSColor.black.cgColor)
+        ctx.addPath(CGPath(roundedRect: shape, cornerWidth: corner, cornerHeight: corner, transform: nil))
+        ctx.fillPath()
+        ctx.setBlendMode(.clear)
+        for rect in holes where rect.width > 0 && rect.height > 0 {
+            let radius = min(corner, min(rect.width, rect.height) / 2)
+            ctx.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
+            ctx.fillPath()
+        }
+        ctx.setBlendMode(.normal)
+    }
+
+    private static func nsMaskImage(size: CGSize, shape: CGRect, holes: [CGRect]) -> NSImage {
+        NSImage(size: size, flipped: false) { _ in
+            if let ctx = NSGraphicsContext.current?.cgContext { draw(shape: shape, holes: holes, into: ctx) }
             return true
         }
+    }
+
+    private static func maskImage(size: CGSize, shape: CGRect, holes: [CGRect], scale: CGFloat) -> CGImage? {
+        let pixels = CGSize(width: size.width * scale, height: size.height * scale)
+        guard pixels.width >= 1, pixels.height >= 1,
+              let ctx = CGContext(data: nil,
+                                  width: Int(pixels.width.rounded()),
+                                  height: Int(pixels.height.rounded()),
+                                  bitsPerComponent: 8,
+                                  bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue)
+        else { return nil }
+        ctx.scaleBy(x: scale, y: scale)
+        draw(shape: shape, holes: holes, into: ctx)
+        return ctx.makeImage()
     }
 
     /// Greedily cuts away each covered area, keeping the largest rectangle that
