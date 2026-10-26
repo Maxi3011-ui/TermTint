@@ -68,6 +68,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         unmark.isEnabled = engine.markedCount > 0
         menu.addItem(unmark)
 
+        let rename = NSMenuItem(title: "Namen in den Chat übernehmen",
+                                action: #selector(toggleRename), keyEquivalent: "")
+        rename.target = self
+        rename.state = engine.renameSessionsEnabled ? .on : .off
+        menu.addItem(rename)
+
         let slots = NSMenuItem(title: "Plätze neu vergeben",
                                action: #selector(clearSlots), keyEquivalent: "")
         slots.target = self
@@ -114,6 +120,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func thawAll() {
         engine.thawAll()
+    }
+
+    @objc private func toggleRename() {
+        engine.renameSessionsEnabled.toggle()
     }
 
     @objc private func clearSlots() {

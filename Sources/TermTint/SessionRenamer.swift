@@ -9,9 +9,16 @@ import AppKit
 enum SessionRenamer {
 
     /// - Parameters:
-    ///   - windowTitle: full title of the Terminal window to type into.
+    ///   - windowID: the window server's id for the window to type into.
     ///   - name: the new session name.
-    static func rename(inWindowTitled windowTitle: String, to name: String) {
+    ///
+    /// Addressed by id, never by title. The title was the first attempt and it
+    /// was wrong twice over: Claude rewrites it several times a second to
+    /// animate its spinner, so the text captured a moment earlier often
+    /// matches nothing by the time the script runs — and two windows can carry
+    /// the exact same title, at which point the command is typed into someone
+    /// else's chat. That happened: sessions were renamed after one another.
+    static func rename(inWindowID windowID: Int, to name: String) {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return }
 
@@ -20,7 +27,7 @@ enum SessionRenamer {
         let script = """
         tell application "Terminal"
             repeat with w in windows
-                if name of w is "\(escaped(windowTitle))" then
+                if id of w is \(windowID) then
                     do script "/rename \(escaped(clean))" in (selected tab of w)
                     return "ok"
                 end if

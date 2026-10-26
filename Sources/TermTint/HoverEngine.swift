@@ -929,18 +929,35 @@ final class HoverEngine {
     /// try to run "/rename" as a command.
     private func renameSession(_ ref: WindowRef, to name: String) {
         guard renameSessionsEnabled,
-              let state = states[ref],
+              var state = states[ref],
               state.role == .claude,
               !name.isEmpty,
               name != state.autoName
         else { return }
-        SessionRenamer.rename(inWindowTitled: state.title, to: name)
+        // Resolved fresh from where the window is right now, never from the
+        // remembered id: the window server hands ids out again, so a
+        // remembered one can belong to someone else by the time it is used.
+        let resolved = windowID(matching: state.frame)
+        if let resolved, resolved != state.windowID {
+            Log.write("Umbenennen: gemerkte Fenster-ID war überholt")
+            state.windowID = resolved
+            states[ref] = state
+        }
+        // Without a certain window we do not rename at all. Guessing types
+        // into whatever window happens to match, which means renaming a chat
+        // that nobody asked about.
+        guard let id = resolved else {
+            Log.write("Umbenennen übersprungen: Fenster nicht eindeutig bestimmbar")
+            return
+        }
+        SessionRenamer.rename(inWindowID: id, to: name)
     }
 
-    /// Off by default is wrong here — the point is that it just happens — but
-    /// it has to be switchable, since it types into a live session.
+    /// Off unless switched on. It types into a live session, and while it was
+    /// addressing windows by title it typed into the wrong ones — that is not
+    /// something to hand back to people silently.
     var renameSessionsEnabled: Bool {
-        get { UserDefaults.standard.object(forKey: "renameSessions") as? Bool ?? true }
+        get { UserDefaults.standard.object(forKey: "renameSessions") as? Bool ?? false }
         set { UserDefaults.standard.set(newValue, forKey: "renameSessions") }
     }
 
