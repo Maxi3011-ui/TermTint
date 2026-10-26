@@ -499,7 +499,7 @@ final class HoverEngine {
         state.autoName = parsed.map(TerminalTitle.autoName(for:)) ?? ""
         state.commandName = parsed?.commandName ?? ""
         state.directory = watcher.directory(of: ref)
-        state.windowID = windowID(matching: frame)
+        state.windowID = windowID(of: ref, at: frame)
         if let parsed, state.activity.noteMarker(TerminalTitle.marker(of: parsed)) {
             startActivityTicker()
         }
@@ -531,6 +531,13 @@ final class HoverEngine {
               !states.values.contains(where: { $0.manualName == stored.name })
         else { return nil }
         return stored
+    }
+
+    /// The window server id for a window, asked from the system first. Only
+    /// if that fails do we fall back to looking for a window standing in the
+    /// same place — which is a guess, and has picked the wrong one before.
+    private func windowID(of ref: WindowRef, at frame: CGRect) -> Int? {
+        AX.windowNumber(of: ref.element) ?? windowID(matching: frame)
     }
 
     /// The window server id for a window we know by its frame.
@@ -726,13 +733,24 @@ final class HoverEngine {
         }
         Log.write("  einblenden: \(state.displayName)")
         states[ref]?.activity.hasUnseenResult = false
+
+        // Where the window stands right now, not where it stood when it last
+        // reported a move. A missed notification left the veil hanging at the
+        // old place, over whatever had taken it.
+        var state = state
+        if let fresh = watcher.frame(of: ref), !fresh.isClose(to: state.frame, within: 1) {
+            Log.write("  Rahmen war überholt — frisch gelesen")
+            state.frame = fresh
+            states[ref]?.frame = fresh
+        }
+
         panel.place(at: state.frame)
         panel.overlay.configure(tint: state.tint,
                                 role: state.role,
                                 name: state.displayName,
                                 caption: state.caption,
                                 titleBarHeight: state.titleBarHeight)
-        panel.overlay.setOcclusion(occluders(for: state.frame))
+        panel.overlay.setOcclusion(occluders(for: ref, frame: state.frame))
         panel.overlay.layoutSubtreeIfNeeded()
         panel.fadeIn()
         placeFreezeButton(for: state)
@@ -755,7 +773,7 @@ final class HoverEngine {
 
     private func updateOcclusion() {
         guard let hovered, let state = states[hovered], !state.dismissed else { return }
-        panel.overlay.setOcclusion(occluders(for: state.frame))
+        panel.overlay.setOcclusion(occluders(for: hovered, frame: state.frame))
         panel.overlay.layoutSubtreeIfNeeded()
         placeFreezeButton(for: state)
     }
@@ -763,10 +781,17 @@ final class HoverEngine {
     /// Areas of the hovered window covered by windows in front of it, in the
     /// overlay's own coordinates. The overlay is cut away there so it never
     /// paints over something that is actually on top.
-    private func occluders(for frame: CGRect) -> [CGRect] {
+    private func occluders(for ref: WindowRef, frame: CGRect) -> [CGRect] {
         guard let terminalPID = watcher.pid else { return [] }
         let ownPID = ProcessInfo.processInfo.processIdentifier
+        // Which entry in the list is the hovered window itself. Asked by id,
+        // not by its outline: two Terminal windows standing in nearly the
+        // same place used to end the walk at the wrong one, and everything
+        // genuinely in front of us was then never cut away — the veil painted
+        // straight over the window on top.
+        let ownWindow = AX.windowNumber(of: ref.element)
         var result: [CGRect] = []
+        var foundSelf = false
 
         for entry in currentWindowList() {
             guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0,
@@ -784,7 +809,13 @@ final class HoverEngine {
             let cocoa = Geo.cocoaRect(fromAX: bounds)
             // The list runs front to back: once we reach our own window,
             // everything left is behind it.
-            if pid == terminalPID, cocoa.isClose(to: frame, within: Self.matchTolerance) { break }
+            let number = entry[kCGWindowNumber as String] as? Int
+            if let ownWindow {
+                if number == ownWindow { foundSelf = true; break }
+            } else if pid == terminalPID, cocoa.isClose(to: frame, within: Self.matchTolerance) {
+                foundSelf = true
+                break
+            }
 
             let overlap = cocoa.intersection(frame)
             guard !overlap.isNull, overlap.width > 2, overlap.height > 2 else { continue }
@@ -804,6 +835,12 @@ final class HoverEngine {
                                  width: cocoa.width,
                                  height: cocoa.height))
         }
+        // Not meeting ourselves means the list and our idea of this window
+        // have drifted apart. Then everything collected is kept, even though
+        // some of it may sit behind us: cutting too much only makes the veil
+        // smaller, while cutting too little paints it over a window that is
+        // genuinely in front — which is the mistake that is actually visible.
+        if !foundSelf { Log.write("Verdeckung: eigenes Fenster nicht in der Liste") }
         return result
     }
 
@@ -906,7 +943,7 @@ final class HoverEngine {
     private func remember(_ ref: WindowRef) {
         guard var state = states[ref] else { return }
         state.directory = watcher.directory(of: ref) ?? state.directory
-        if state.windowID == nil { state.windowID = windowID(matching: state.frame) }
+        if state.windowID == nil { state.windowID = windowID(of: ref, at: state.frame) }
         states[ref] = state
 
         var keys: [String] = []
@@ -937,7 +974,7 @@ final class HoverEngine {
         // Resolved fresh from where the window is right now, never from the
         // remembered id: the window server hands ids out again, so a
         // remembered one can belong to someone else by the time it is used.
-        let resolved = windowID(matching: state.frame)
+        let resolved = windowID(of: ref, at: state.frame)
         if let resolved, resolved != state.windowID {
             Log.write("Umbenennen: gemerkte Fenster-ID war überholt")
             state.windowID = resolved
@@ -989,7 +1026,7 @@ final class HoverEngine {
     /// from the one in each row of the ⌥Tab overview.
     func toggleMark(_ ref: WindowRef) {
         guard var state = states[ref] else { return }
-        if state.windowID == nil { state.windowID = windowID(matching: state.frame) }
+        if state.windowID == nil { state.windowID = windowID(of: ref, at: state.frame) }
         state.isMarked.toggle()
         states[ref] = state
         MarkStore.set(state.isMarked, for: markKeys(for: state))
@@ -1013,7 +1050,7 @@ final class HoverEngine {
             // what we do not know yet and look again.
             let ttys = Freezer.ttys()
             for (ref, state) in states {
-                guard let id = state.windowID ?? windowID(matching: state.frame),
+                guard let id = state.windowID ?? windowID(of: ref, at: state.frame),
                       let found = ttys[id] else { continue }
                 states[ref]?.windowID = id
                 states[ref]?.tty = found
@@ -1185,11 +1222,11 @@ final class HoverEngine {
         // session sits where it always sits.
         let ordered = arrangementOrder(Array(marked.keys))
 
-        for ref in ordered {
+        for (index, ref) in ordered.enumerated() {
             pendingMinimize[ref] = false
             states[ref]?.isMinimized = false
             states[ref]?.isOnScreen = true
-            watcher.raise(ref)
+            watcher.raise(ref, verify: index == ordered.count - 1)
         }
 
         let area = tilingScreen().visibleFrame
@@ -1272,7 +1309,7 @@ final class HoverEngine {
     /// overlay and from the one in each row of the ⌥Tab overview.
     func toggleFreeze(_ ref: WindowRef) {
         guard var state = states[ref] else { return }
-        if state.windowID == nil { state.windowID = windowID(matching: state.frame) }
+        if state.windowID == nil { state.windowID = windowID(of: ref, at: state.frame) }
         // Tabs can be switched, so the tty is looked up fresh on every click.
         guard let id = state.windowID, let tty = Freezer.ttys()[id] else {
             Log.write("Einfrieren: kein tty für das Fenster gefunden")
@@ -1298,7 +1335,7 @@ final class HoverEngine {
         guard freezer.count > 0 else { return }
         let ttys = Freezer.ttys()
         for ref in Array(states.keys) {
-            guard let id = states[ref]?.windowID ?? states[ref].flatMap({ windowID(matching: $0.frame) }),
+            guard let id = states[ref]?.windowID ?? states[ref].flatMap({ windowID(of: ref, at: $0.frame) }),
                   let tty = ttys[id] else { continue }
             states[ref]?.windowID = id
             states[ref]?.tty = tty

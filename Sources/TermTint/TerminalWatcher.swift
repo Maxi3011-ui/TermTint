@@ -50,6 +50,28 @@ enum AX {
             != .invalidUIElement
     }
 
+    /// The window-server id behind an accessibility window, asked straight
+    /// from the system. Matching frames instead is a guess: two windows can
+    /// stand in the same place, and a remembered frame can be out of date —
+    /// both have already pointed TermTint at the wrong window.
+    private static let getWindowNumber: GetWindowNumber? = {
+        let path = "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+        guard let handle = dlopen(path, RTLD_LAZY),
+              let symbol = dlsym(handle, "_AXUIElementGetWindow")
+        else { return nil }
+        return unsafeBitCast(symbol, to: GetWindowNumber.self)
+    }()
+
+    private typealias GetWindowNumber =
+        @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
+
+    static func windowNumber(of window: AXUIElement) -> Int? {
+        guard let ask = getWindowNumber else { return nil }
+        var id: CGWindowID = 0
+        guard ask(window, &id) == .success, id != 0 else { return nil }
+        return Int(id)
+    }
+
     static func frame(of window: AXUIElement) -> CGRect? {
         guard let posRef = copy(window, kAXPositionAttribute),
               let sizeRef = copy(window, kAXSizeAttribute),
@@ -285,16 +307,71 @@ final class TerminalWatcher {
     }
 
     /// Brings a window forward, the way the ⌥Tab overview expects.
-    func raise(_ ref: WindowRef) {
+    ///
+    /// Accessibility alone is not enough: Terminal is one process for all
+    /// windows, and while it is busy the raise message simply times out — the
+    /// request is dropped without a word and the window stays where it was.
+    /// So the result is checked, and if the window did not actually arrive in
+    /// front, Terminal is asked to do it itself.
+    func raise(_ ref: WindowRef, verify: Bool = true) {
         // A minimised window has to come out of the Dock first, otherwise
         // raising it does nothing at all.
         if AX.bool(ref.element, kAXMinimizedAttribute) {
             AXUIElementSetAttributeValue(ref.element, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
         }
-        AXUIElementPerformAction(ref.element, kAXRaiseAction as CFString)
+        let id = AX.windowNumber(of: ref.element)
+        let raised = AXUIElementPerformAction(ref.element, kAXRaiseAction as CFString)
         AXUIElementSetAttributeValue(ref.element, kAXMainAttribute as CFString, kCFBooleanTrue)
         if let pid, let app = NSRunningApplication(processIdentifier: pid) {
             app.activate()
+        }
+
+        guard raised == .success else {
+            Log.write("Nach vorn: Accessibility hat abgelehnt (\(raised.rawValue)) — über Terminal selbst")
+            bringToFront(id)
+            return
+        }
+        // Even a successful raise can leave the window behind, so look once
+        // more when the window server has had its moment. Skipped when a
+        // whole stack is being raised in one go: there only the last one is
+        // meant to end up in front, and asking Terminal twenty times over
+        // would shuffle the order rather than settle it.
+        guard verify else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self, let id, !self.isFrontmost(id) else { return }
+            Log.write("Nach vorn: nicht angekommen — über Terminal selbst")
+            self.bringToFront(id)
+        }
+    }
+
+    /// Whether this window is the topmost ordinary window on screen.
+    private func isFrontmost(_ id: Int) -> Bool {
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+        for entry in list {
+            guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0,
+                  entry[kCGWindowIsOnscreen as String] as? Bool == true,
+                  let pid = entry[kCGWindowOwnerPID as String] as? pid_t,
+                  pid != ProcessInfo.processInfo.processIdentifier
+            else { continue }
+            return entry[kCGWindowNumber as String] as? Int == id
+        }
+        return false
+    }
+
+    /// The way round Accessibility: Terminal orders its own window forward.
+    /// Slower, but it does not quietly give up.
+    private func bringToFront(_ id: Int?) {
+        guard let id else { return }
+        let source = """
+        tell application "Terminal"
+            activate
+            set frontmost of window id \(id) to true
+        end tell
+        """
+        DispatchQueue.global(qos: .userInitiated).async {
+            var failure: NSDictionary?
+            NSAppleScript(source: source)?.executeAndReturnError(&failure)
+            if let failure { Log.write("Nach vorn über Terminal fehlgeschlagen: \(failure)") }
         }
     }
 
