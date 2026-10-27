@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        MainMenu.install()
         menuBar = MenuBarController(engine: engine)
 
         switcher.entriesProvider = { [engine] in engine.switcherEntries() }
