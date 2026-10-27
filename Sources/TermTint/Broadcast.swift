@@ -64,6 +64,7 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         hotKey = GlobalHotKey(keyCode: UInt32(kVK_ANSI_A), modifiers: UInt32(optionKey | cmdKey)) { [weak self] in
             DispatchQueue.main.async { self?.toggle() }
         }
+        Log.write("Rundruf: ⌥⌘A \(hotKey == nil ? "NICHT registriert (belegt?)" : "registriert")")
 
         let workspace = NSWorkspace.shared.notificationCenter
         workspace.addObserver(self, selector: #selector(appActivated(_:)),

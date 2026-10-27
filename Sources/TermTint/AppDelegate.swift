@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switcher.onRestoreAll = { [engine] in engine.restoreAllMinimized() }
         switcher.onMinimizeFrozen = { [engine] in engine.minimizeAllFrozen() }
         switcher.onRaiseMarked = { [engine] in engine.raiseAllMarked() }
+        switcher.onBroadcast = { [broadcast] in broadcast.open() }
         switcher.onTileAll = { [engine] in engine.tileAllWindows() }
         switcher.onDefaultSize = { [engine] in engine.resizeAllToDefault() }
         switcher.activeArrangements = { [engine] in
