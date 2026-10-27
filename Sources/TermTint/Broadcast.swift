@@ -25,17 +25,27 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
     private let panel = BroadcastPanel()
     private let field = NSTextField()
     private let status = NSTextField(labelWithString: "")
+    private let followBox = NSButton()
     private let list = NSStackView()
+    private let quick = NSStackView()
     private var targets: [Target] = []
     private var checkboxes: [NSButton] = []
     private var hotKey: GlobalHotKey?
 
-    /// Which chats are ticked. Kept by name, because that is what survives a
-    /// restart of Terminal — window ids do not, and a recycled id would aim
-    /// the next broadcast at a window nobody picked.
+    /// Which chats are ticked by hand. Kept by name, because that is what
+    /// survives a restart of Terminal — window ids do not, and a recycled id
+    /// would aim the next broadcast at a window nobody picked.
     private var chosen: Set<String> {
         get { Set(UserDefaults.standard.stringArray(forKey: "broadcast") ?? []) }
         set { UserDefaults.standard.set(Array(newValue).sorted(), forKey: "broadcast") }
+    }
+
+    /// Follow the red dots instead of a hand-picked list. Then the recipients
+    /// are whatever is marked right now — marking a chat adds it, taking the
+    /// dot off removes it, and nothing has to be kept in two places.
+    private var followsMarks: Bool {
+        get { UserDefaults.standard.bool(forKey: "broadcastFollowsMarks") }
+        set { UserDefaults.standard.set(newValue, forKey: "broadcastFollowsMarks") }
     }
 
     /// Whether the field is wanted at all. It hides and comes back with
@@ -56,10 +66,16 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         }
 
         let workspace = NSWorkspace.shared.notificationCenter
-        workspace.addObserver(self, selector: #selector(appChanged),
+        workspace.addObserver(self, selector: #selector(appActivated(_:)),
                               name: NSWorkspace.didActivateApplicationNotification, object: nil)
+        // Second, independent signal: Terminal stepping down. If the one
+        // notification is ever missed, the field must still get out of the way.
+        workspace.addObserver(self, selector: #selector(appDeactivated(_:)),
+                              name: NSWorkspace.didDeactivateApplicationNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(marksChanged),
+                                               name: HoverEngine.marksChanged, object: nil)
 
-        if isOn { syncVisibility() }
+        if isOn { syncVisibility(front: NSWorkspace.shared.frontmostApplication?.bundleIdentifier) }
     }
 
     // MARK: - Opening and closing
@@ -82,34 +98,57 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
 
     /// Only while Terminal is in front — the field is for the terminals, not
     /// something to lie over every other app.
-    @objc private func appChanged() {
-        syncVisibility()
+    ///
+    /// The app comes out of the notification itself, never from
+    /// `frontmostApplication`: at this moment that property still names the
+    /// *previous* app, so switching from Terminal to the browser read back
+    /// "Terminal", the field stayed lying there, and no further notification
+    /// ever came to correct it.
+    @objc private func appActivated(_ note: Notification) {
+        syncVisibility(front: Self.app(in: note))
     }
 
-    private func syncVisibility() {
+    @objc private func appDeactivated(_ note: Notification) {
+        guard Self.app(in: note) == "com.apple.Terminal" else { return }
+        // Who takes over is only known a moment later, from the activation
+        // notification. Until then the field is wrong where it is.
+        syncVisibility(front: nil)
+    }
+
+    private static func app(in note: Notification) -> String? {
+        let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        return app?.bundleIdentifier
+    }
+
+    private func syncVisibility(front: String?) {
         guard isOn else { return panel.orderOut(nil) }
-        let bundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        if bundle == "com.apple.Terminal" || bundle == Bundle.main.bundleIdentifier {
-            if !panel.isVisible { reload() }
-            showPanel()
-        } else {
-            panel.orderOut(nil)
-        }
+        let wanted = front == "com.apple.Terminal" || front == Bundle.main.bundleIdentifier
+        Log.write("Rundruf: vorne \(front ?? "—") -> \(wanted ? "zeigen" : "ausblenden")")
+        guard wanted else { return panel.orderOut(nil) }
+        if !panel.isVisible { reload() }
+        showPanel()
     }
 
     private func showPanel() {
-        if panel.frameAutosaveName.isEmpty || panel.frame.origin == .zero {
-            panel.center()
-        }
+        if panel.frame.origin == .zero { panel.center() }
         panel.orderFrontRegardless()
     }
 
     // MARK: - Recipients
 
+    @objc private func marksChanged() {
+        guard panel.isVisible else { return }
+        reload()
+    }
+
     /// Rebuilt every time it is shown: windows come and go, and a tick on a
     /// chat that is gone would send nothing while looking as if it had.
     private func reload() {
         targets = targetsProvider?() ?? []
+        let follow = followsMarks
+        followBox.state = follow ? .on : .off
+        for case let button as NSButton in quick.views { button.isEnabled = !follow }
+
         list.setViews([], in: .leading)
         checkboxes = []
 
@@ -122,17 +161,17 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
             let box = NSButton(checkboxWithTitle: target.name.isEmpty ? "Ohne Namen" : target.name,
                                target: self, action: #selector(tick(_:)))
             box.tag = checkboxes.count
-            box.state = chosen.contains(target.name) ? .on : .off
             box.font = .systemFont(ofSize: 12)
+            // While the red dots are in charge, the ticks show what that
+            // means rather than pretending to be editable.
+            box.state = (follow ? target.isMarked : chosen.contains(target.name)) ? .on : .off
+            box.isEnabled = !follow
             checkboxes.append(box)
 
-            let dot = DotView(color: target.tint.base.withAlphaComponent(0.9))
-            row.addView(dot, in: .leading)
+            row.addView(DotView(color: target.tint.base.withAlphaComponent(0.9)), in: .leading)
+            if target.isMarked { row.addView(DotView(color: .systemRed), in: .leading) }
             row.addView(box, in: .leading)
 
-            if target.isMarked {
-                row.addView(DotView(color: .systemRed), in: .leading)
-            }
             if target.isMinimized {
                 let tag = NSTextField(labelWithString: "im Dock")
                 tag.font = .systemFont(ofSize: 10)
@@ -155,6 +194,15 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         updateStatus()
     }
 
+    /// The tie-in with the red dots: on, the recipients are the marked chats
+    /// and follow every dot you set; off, your own ticks count again — and
+    /// they were kept while the dots were in charge, so they come back
+    /// exactly as they were.
+    @objc private func toggleFollow() {
+        followsMarks = followBox.state == .on
+        reload()
+    }
+
     @objc private func chooseAll() {
         chosen = Set(targets.map(\.name))
         reload()
@@ -171,16 +219,18 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
     }
 
     private var selectedTargets: [Target] {
+        guard !followsMarks else { return targets.filter(\.isMarked) }
         let set = chosen
         return targets.filter { set.contains($0.name) }
     }
 
     private func updateStatus() {
         let count = selectedTargets.count
+        let source = followsMarks ? " (rot)" : ""
         switch count {
-        case 0: status.stringValue = "Niemand ausgewählt"
-        case 1: status.stringValue = "Enter → 1 Chat"
-        default: status.stringValue = "Enter → \(count) Chats"
+        case 0: status.stringValue = followsMarks ? "Kein Chat rot markiert" : "Niemand ausgewählt"
+        case 1: status.stringValue = "Enter → 1 Chat" + source
+        default: status.stringValue = "Enter → \(count) Chats" + source
         }
         status.textColor = .secondaryLabelColor
     }
@@ -192,7 +242,7 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         let receivers = selectedTargets
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard !receivers.isEmpty else {
-            status.stringValue = "Erst Chats auswählen"
+            status.stringValue = followsMarks ? "Erst einen Chat rot markieren" : "Erst Chats auswählen"
             status.textColor = .systemOrange
             return
         }
@@ -253,37 +303,42 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
     // MARK: - Layout
 
     private func build() {
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 300))
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 320))
 
         field.placeholderString = "Prompt an die ausgewählten Chats …"
         field.font = .systemFont(ofSize: 13)
         field.target = self
         field.action = #selector(send)
         field.delegate = self
-        field.translatesAutoresizingMaskIntoConstraints = false
 
         status.font = .systemFont(ofSize: 11)
-        status.translatesAutoresizingMaskIntoConstraints = false
 
-        let all = button("Alle", #selector(chooseAll))
-        let red = button("Rot", #selector(chooseMarked))
-        let none = button("Keiner", #selector(chooseNone))
-        let quick = NSStackView(views: [all, red, none])
+        followBox.setButtonType(.switch)
+        followBox.title = "Den roten Punkten folgen"
+        followBox.font = .systemFont(ofSize: 12)
+        followBox.target = self
+        followBox.action = #selector(toggleFollow)
+
+        quick.setViews([button("Alle", #selector(chooseAll)),
+                        button("Rot übernehmen", #selector(chooseMarked)),
+                        button("Keiner", #selector(chooseNone))], in: .leading)
         quick.spacing = 6
-        quick.translatesAutoresizingMaskIntoConstraints = false
 
         list.orientation = .vertical
         list.alignment = .leading
         list.spacing = 2
-        list.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
+        list.edgeInsets = NSEdgeInsets(top: 4, left: 2, bottom: 4, right: 2)
 
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
+        scroll.borderType = .noBorder
         scroll.documentView = list
-        scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        for view in [field, status, quick, scroll] { content.addSubview(view) }
+        for view in [field, status, followBox, quick, scroll] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            content.addSubview(view)
+        }
 
         NSLayoutConstraint.activate([
             field.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
@@ -293,14 +348,23 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
             status.topAnchor.constraint(equalTo: field.bottomAnchor, constant: 6),
             status.leadingAnchor.constraint(equalTo: field.leadingAnchor),
 
-            quick.topAnchor.constraint(equalTo: status.bottomAnchor, constant: 8),
+            followBox.topAnchor.constraint(equalTo: status.bottomAnchor, constant: 8),
+            followBox.leadingAnchor.constraint(equalTo: field.leadingAnchor),
+
+            quick.topAnchor.constraint(equalTo: followBox.bottomAnchor, constant: 6),
             quick.leadingAnchor.constraint(equalTo: field.leadingAnchor),
 
             scroll.topAnchor.constraint(equalTo: quick.bottomAnchor, constant: 8),
             scroll.leadingAnchor.constraint(equalTo: field.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: field.trailingAnchor),
             scroll.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
-            scroll.heightAnchor.constraint(greaterThanOrEqualTo: content.heightAnchor, multiplier: 0.3),
+
+            // A stack view inside a scroll view has no width of its own: left
+            // to itself it collapses, and the list looks empty even though the
+            // rows are there.
+            list.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
+            list.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
+            list.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
         ])
 
         panel.contentView = content
@@ -342,7 +406,7 @@ private final class DotView: NSView {
 final class BroadcastPanel: NSPanel {
 
     init() {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 360, height: 300),
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 360, height: 320),
                    styleMask: [.titled, .closable, .utilityWindow, .nonactivatingPanel],
                    backing: .buffered,
                    defer: false)

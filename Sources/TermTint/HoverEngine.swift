@@ -1063,11 +1063,16 @@ final class HoverEngine {
         state.isMarked.toggle()
         states[ref] = state
         MarkStore.set(state.isMarked, for: markKeys(for: state))
+        NotificationCenter.default.post(name: HoverEngine.marksChanged, object: nil)
         Log.write("Markierung: \(state.displayName) -> \(state.isMarked ? "gesetzt" : "entfernt")")
         updateMarkDots()
         if hovered == ref { placeFreezeButton(for: state) }
         redrawHovered()
     }
+
+    /// Posted whenever a red dot is set or taken off, so the broadcast field
+    /// can follow the marks without asking again and again.
+    static let marksChanged = Notification.Name("TermTintMarksChanged")
 
     var markedCount: Int { states.values.filter(\.isMarked).count }
 
@@ -1112,6 +1117,7 @@ final class HoverEngine {
     func clearAllMarks() {
         for ref in Array(states.keys) { states[ref]?.isMarked = false }
         MarkStore.clear()
+        NotificationCenter.default.post(name: HoverEngine.marksChanged, object: nil)
         updateMarkDots()
         redrawHovered()
     }
