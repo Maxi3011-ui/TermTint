@@ -229,6 +229,23 @@ final class HoverEngine {
         }
     }
 
+    /// Recipients for the broadcast field. Only windows that are really
+    /// there: a name without a window id could not be written to anyway.
+    func broadcastTargets() -> [Broadcast.Target] {
+        for ref in Array(states.keys) { applyTitle(watcher.title(of: ref), to: ref) }
+        return states.values
+            .compactMap { state -> Broadcast.Target? in
+                guard let id = state.windowID else { return nil }
+                return Broadcast.Target(name: state.displayName,
+                                        windowID: id,
+                                        tint: state.tint,
+                                        role: state.role,
+                                        isMarked: state.isMarked,
+                                        isMinimized: state.isMinimized)
+            }
+            .sorted { ($0.role.rawValue, $0.name.lowercased()) < ($1.role.rawValue, $1.name.lowercased()) }
+    }
+
     /// Puts a window away or brings it back, without switching to it.
     ///
     /// The change is recorded here, not carried out. The overview is open only

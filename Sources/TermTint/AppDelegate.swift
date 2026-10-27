@@ -6,13 +6,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let engine = HoverEngine()
     private let switcher = Switcher()
     private let inbox = CommandInbox()
+    private let broadcast = Broadcast()
     private var menuBar: MenuBarController?
     private var permissionCheck: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         MainMenu.install()
-        menuBar = MenuBarController(engine: engine)
+        broadcast.targetsProvider = { [engine] in engine.broadcastTargets() }
+        menuBar = MenuBarController(engine: engine, broadcast: broadcast)
 
         switcher.entriesProvider = { [engine] in engine.switcherEntries() }
         switcher.onActivate = { [engine] ref in engine.activate(ref) }

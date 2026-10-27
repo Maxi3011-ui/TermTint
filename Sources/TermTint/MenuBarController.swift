@@ -5,10 +5,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let engine: HoverEngine
+    private let broadcast: Broadcast
     private let menu = NSMenu()
 
-    init(engine: HoverEngine) {
+    init(engine: HoverEngine, broadcast: Broadcast) {
         self.engine = engine
+        self.broadcast = broadcast
         super.init()
 
         statusItem.button?.image = NSImage(systemSymbolName: "square.text.square",
@@ -44,6 +46,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         toggle.keyEquivalentModifierMask = [.command, .option]
         toggle.target = self
         menu.addItem(toggle)
+
+        let rundruf = NSMenuItem(title: "An alle schicken …", action: #selector(toggleBroadcast), keyEquivalent: "a")
+        rundruf.keyEquivalentModifierMask = [.command, .option]
+        rundruf.target = self
+        rundruf.state = broadcast.isVisible ? .on : .off
+        menu.addItem(rundruf)
 
         let shuffle = NSMenuItem(title: "Farben neu würfeln", action: #selector(reshuffle), keyEquivalent: "")
         shuffle.target = self
@@ -108,6 +116,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func toggleEnabled() {
         engine.setEnabled(!engine.isEnabled)
+    }
+
+    @objc private func toggleBroadcast() {
+        broadcast.toggle()
     }
 
     @objc private func reshuffle() {
