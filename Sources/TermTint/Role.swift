@@ -107,10 +107,18 @@ enum TerminalTitle {
     /// the two apart, without depending on knowing the specific characters.
     static func marker(of parsed: Parsed) -> String? {
         guard let session = parsed.sessionTitle?.trimmingCharacters(in: .whitespaces),
-              let first = session.first,
-              !first.isLetter, !first.isNumber, !first.isWhitespace
+              let first = session.first, isDecoration(first)
         else { return nil }
         return String(first)
+    }
+
+    /// A glyph a tool put there, not one a person did. An emoji at the front
+    /// of a name belongs to the name: it never changes, so reading it as a
+    /// spinner would make the session look permanently finished — and
+    /// stripping it would quietly eat it out of the name.
+    private static func isDecoration(_ character: Character) -> Bool {
+        guard !character.isLetter, !character.isNumber, !character.isWhitespace else { return false }
+        return !character.unicodeScalars.contains { $0.properties.isEmojiPresentation }
     }
 
     static func role(for parsed: Parsed) -> Role {
@@ -153,7 +161,7 @@ enum TerminalTitle {
     /// it works (✳ ◑ ✻ …). Only a short symbol run followed by a space counts
     /// as decoration — a title like "~/Projekte/app" must survive intact.
     private static func stripLeadingGlyphs(_ text: String) -> String {
-        let prefix = text.prefix { !$0.isLetter && !$0.isNumber && !$0.isWhitespace }
+        let prefix = text.prefix(while: isDecoration)
         guard !prefix.isEmpty, prefix.count <= 2 else {
             return text.trimmingCharacters(in: .whitespaces)
         }
