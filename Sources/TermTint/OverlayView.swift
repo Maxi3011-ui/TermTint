@@ -195,7 +195,11 @@ final class OverlayView: NSView, NSTextFieldDelegate {
         needsLayout = true
         layoutSubtreeIfNeeded()
         window?.makeFirstResponder(field)
-        field.currentEditor()?.selectAll(nil)
+        // The cursor goes to the end, nothing is selected: a name you typed
+        // yourself stays put so you can add to it. Selecting it all meant the
+        // first keystroke wiped the whole thing — which is not what tapping a
+        // name you already chose is meant to do.
+        field.currentEditor()?.selectedRange = NSRange(location: (prefill as NSString).length, length: 0)
     }
 
     func commitEditing() {
