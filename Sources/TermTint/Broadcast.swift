@@ -40,7 +40,7 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
     private let panel = BroadcastPanel()
     private let view = BroadcastView()
     private var targets: [Target] = []
-    private var hotKey: GlobalHotKey?
+    private var hotKeys: [GlobalHotKey] = []
 
     private var isOn: Bool {
         get { UserDefaults.standard.bool(forKey: "broadcastOpen") }
@@ -59,10 +59,17 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         view.field.delegate = self
         view.field.target = self
         view.field.action = #selector(send)
-        view.onClose = { [weak self] in self?.close() }
 
-        hotKey = GlobalHotKey(keyCode: UInt32(kVK_ANSI_A), modifiers: UInt32(optionKey | cmdKey)) { [weak self] in
-            DispatchQueue.main.async { self?.toggle() }
+        // PrtSc on a PC keyboard arrives on a Mac as F13. ⌥⌘A stays
+        // registered as well: if that key is taken or a keyboard does not have
+        // it, there has to be a way in that is not a guess.
+        for (code, modifiers, name) in [(UInt32(kVK_F13), UInt32(0), "PrtSc (F13)"),
+                                        (UInt32(kVK_ANSI_A), UInt32(optionKey | cmdKey), "⌥⌘A")] {
+            let key = GlobalHotKey(keyCode: code, modifiers: modifiers) { [weak self] in
+                DispatchQueue.main.async { self?.toggle() }
+            }
+            Log.write("Rundruf: \(name) \(key == nil ? "NICHT registriert (belegt?)" : "registriert")")
+            if let key { hotKeys.append(key) }
         }
 
         let workspace = NSWorkspace.shared.notificationCenter
@@ -146,7 +153,10 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         }
         let size = view.wantedSize
         if panel.frame.size != size { panel.setContentSize(size) }
-        let origin = CGPoint(x: anchor.midX - size.width / 2, y: anchor.minY + 12)
+        // Like Spotlight: centred over the window you are working in, a third
+        // of the way down, not clamped to an edge.
+        let origin = CGPoint(x: anchor.midX - size.width / 2,
+                             y: anchor.maxY - anchor.height * 0.32 - size.height / 2)
         if panel.frame.origin != origin { panel.setFrameOrigin(origin) }
         if !panel.isVisible { panel.orderFrontRegardless() }
     }
@@ -246,34 +256,35 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
 
 // MARK: - The bar itself
 
-/// A slim HUD bar: one line to type in, underneath it who it goes to.
+/// A Spotlight-sized bar: one wide line to type in, underneath it who it goes
+/// to. Deliberately the proportions of Spotlight — a wide, calm line with
+/// room to breathe, not a dialog box full of controls.
 final class BroadcastView: NSView {
 
     private enum Metrics {
-        static let width: CGFloat = 420
-        static let padding: CGFloat = 14
-        static let fieldHeight: CGFloat = 26
-        static let gap: CGFloat = 10
-        static let captionHeight: CGFloat = 14
-        static let corner: CGFloat = 14
+        static let width: CGFloat = 620
+        static let padding: CGFloat = 20
+        static let fieldHeight: CGFloat = 42
+        static let captionHeight: CGFloat = 15
+        static let corner: CGFloat = 20
     }
 
     let field = NSTextField()
     private let caption = NSTextField(labelWithString: "")
     private let chips = ChipsView()
     private let effect = NSVisualEffectView()
-    private let close = NSButton()
+    private let icon = NSImageView()
+    private let divider = NSView()
     private let pick = NSButton()
 
-    var onClose: (() -> Void)?
     var onPick: (() -> Void)?
 
     /// Grows with the number of recipients, never with the window.
     var wantedSize: CGSize {
-        let chipsHeight = chips.height(forWidth: Metrics.width - Metrics.padding * 2)
+        let inner = Metrics.width - Metrics.padding * 2
         return CGSize(width: Metrics.width,
-                      height: Metrics.padding * 2 + Metrics.fieldHeight + Metrics.gap
-                          + chipsHeight + 6 + Metrics.captionHeight)
+                      height: Metrics.padding * 2 + Metrics.fieldHeight + 14 + 1 + 12
+                          + chips.height(forWidth: inner) + 10 + Metrics.captionHeight)
     }
 
     override init(frame frameRect: NSRect) {
@@ -288,55 +299,54 @@ final class BroadcastView: NSView {
         effect.layer?.cornerCurve = .continuous
         effect.layer?.masksToBounds = true
         effect.layer?.borderWidth = 1
-        effect.layer?.borderColor = NSColor(white: 1, alpha: 0.12).cgColor
+        effect.layer?.borderColor = NSColor(white: 1, alpha: 0.14).cgColor
         addSubview(effect)
+
+        icon.image = NSImage(systemSymbolName: "paperplane.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 19, weight: .regular))
+        icon.contentTintColor = NSColor(white: 1, alpha: 0.45)
+        addSubview(icon)
 
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
-        field.font = .systemFont(ofSize: 14)
+        field.font = .systemFont(ofSize: 24, weight: .light)
         field.textColor = .white
         field.placeholderAttributedString = NSAttributedString(
-            string: "An die markierten Chats …",
-            attributes: [.font: NSFont.systemFont(ofSize: 14),
-                         .foregroundColor: NSColor(white: 1, alpha: 0.35)])
+            string: "Prompt an die gew\u{00e4}hlten Chats \u{2026}",
+            attributes: [.font: NSFont.systemFont(ofSize: 24, weight: .light),
+                         .foregroundColor: NSColor(white: 1, alpha: 0.30)])
         field.usesSingleLineMode = true
         addSubview(field)
 
-        caption.font = .systemFont(ofSize: 11)
-        caption.textColor = NSColor(white: 1, alpha: 0.45)
-        addSubview(caption)
-
-        addSubview(chips)
-
-        pick.title = "Fenster wählen"
+        pick.title = "Fenster w\u{00e4}hlen"
         pick.bezelStyle = .rounded
-        pick.controlSize = .small
-        pick.font = .systemFont(ofSize: 11)
+        pick.font = .systemFont(ofSize: 12)
         pick.target = self
         pick.action = #selector(pickPressed)
         addSubview(pick)
 
-        close.isBordered = false
-        close.bezelStyle = .inline
-        close.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "schließen")
-        close.contentTintColor = NSColor(white: 1, alpha: 0.4)
-        close.target = self
-        close.action = #selector(closePressed)
-        addSubview(close)
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = NSColor(white: 1, alpha: 0.10).cgColor
+        addSubview(divider)
+
+        addSubview(chips)
+
+        caption.font = .systemFont(ofSize: 12)
+        caption.textColor = NSColor(white: 1, alpha: 0.45)
+        addSubview(caption)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    @objc private func closePressed() { onClose?() }
     @objc private func pickPressed() { onPick?() }
 
     func show(recipients: [Broadcast.Target]) {
         chips.items = recipients.map { ($0.name.isEmpty ? "Ohne Namen" : $0.name, $0.tint.base) }
         switch recipients.count {
-        case 0: say("Noch keine Fenster gewählt — „Fenster wählen\u{201C} drücken", warning: false)
-        case 1: say("⏎ schickt an 1 Chat", warning: false)
-        case let count: say("⏎ schickt an \(count) Chats", warning: false)
+        case 0: say("Noch keine Fenster gew\u{00e4}hlt \u{00b7} esc schlie\u{00df}t", warning: false)
+        case 1: say("\u{23ce} schickt an 1 Chat \u{00b7} esc schlie\u{00df}t", warning: false)
+        case let count: say("\u{23ce} schickt an \(count) Chats \u{00b7} esc schlie\u{00df}t", warning: false)
         }
         needsLayout = true
     }
@@ -350,21 +360,25 @@ final class BroadcastView: NSView {
         super.layout()
         effect.frame = bounds
         let inner = bounds.insetBy(dx: Metrics.padding, dy: Metrics.padding)
+        let fieldTop = bounds.maxY - Metrics.padding
 
-        close.frame = CGRect(x: bounds.maxX - 24, y: bounds.maxY - 24, width: 16, height: 16)
+        icon.frame = CGRect(x: inner.minX, y: fieldTop - 32, width: 24, height: 22)
 
-        let pickWidth: CGFloat = 108
-        pick.frame = CGRect(x: inner.maxX - pickWidth, y: inner.maxY - Metrics.fieldHeight + 1,
-                            width: pickWidth, height: Metrics.fieldHeight - 2)
-        field.frame = CGRect(x: inner.minX, y: inner.maxY - Metrics.fieldHeight,
-                             width: inner.width - pickWidth - 10, height: Metrics.fieldHeight)
+        let pickWidth: CGFloat = 124
+        pick.frame = CGRect(x: inner.maxX - pickWidth, y: fieldTop - 36,
+                            width: pickWidth, height: 28)
+
+        field.frame = CGRect(x: icon.frame.maxX + 10, y: fieldTop - 38,
+                             width: pick.frame.minX - icon.frame.maxX - 20, height: 34)
+
+        divider.frame = CGRect(x: inner.minX, y: fieldTop - Metrics.fieldHeight - 14,
+                               width: inner.width, height: 1)
 
         let chipsHeight = chips.height(forWidth: inner.width)
-        chips.frame = CGRect(x: inner.minX,
-                             y: field.frame.minY - Metrics.gap - chipsHeight,
+        chips.frame = CGRect(x: inner.minX, y: divider.frame.minY - 12 - chipsHeight,
                              width: inner.width, height: chipsHeight)
 
-        caption.frame = CGRect(x: inner.minX, y: inner.minY,
+        caption.frame = CGRect(x: inner.minX, y: bounds.minY + Metrics.padding - 6,
                                width: inner.width, height: Metrics.captionHeight)
     }
 
@@ -375,15 +389,15 @@ final class BroadcastView: NSView {
         var items: [(String, NSColor)] = [] { didSet { needsDisplay = true; needsLayout = true } }
 
         private enum Chip {
-            static let height: CGFloat = 20
-            static let spacing: CGFloat = 6
-            static let inset: CGFloat = 8
-            static let dot: CGFloat = 7
-            static let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+            static let height: CGFloat = 24
+            static let spacing: CGFloat = 7
+            static let inset: CGFloat = 10
+            static let dot: CGFloat = 8
+            static let font = NSFont.systemFont(ofSize: 12, weight: .medium)
         }
 
         private func width(of title: String) -> CGFloat {
-            Chip.inset + Chip.dot + 5
+            Chip.inset + Chip.dot + 6
                 + ceil((title as NSString).size(withAttributes: [.font: Chip.font]).width)
                 + Chip.inset
         }
@@ -435,10 +449,10 @@ final class BroadcastView: NSView {
                     let text = title as NSString
                     let attributes: [NSAttributedString.Key: Any] = [
                         .font: Chip.font,
-                        .foregroundColor: NSColor(white: 1, alpha: 0.85),
+                        .foregroundColor: NSColor(white: 1, alpha: 0.88),
                     ]
-                    let textRect = CGRect(x: dot.maxX + 5, y: rect.midY - 7,
-                                          width: rect.maxX - Chip.inset - (dot.maxX + 5), height: 14)
+                    let textRect = CGRect(x: dot.maxX + 6, y: rect.midY - 8,
+                                          width: rect.maxX - Chip.inset - (dot.maxX + 6), height: 16)
                     text.draw(in: textRect, withAttributes: attributes)
                     x += w + Chip.spacing
                 }
