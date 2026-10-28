@@ -49,6 +49,8 @@ final class Switcher {
     var onTileAll: (() -> Void)?
     /// Puts every window back to the size a new one would have.
     var onDefaultSize: (() -> Void)?
+    /// Opens the broadcast bar — the second way in, next to the PrtSc key.
+    var onBroadcast: (() -> Void)?
     /// Which of those are currently in effect, so the buttons can offer to
     /// undo them.
     var activeArrangements: (() -> Set<Arrangement>)?
@@ -81,6 +83,17 @@ final class Switcher {
         view.onRaiseMarked = { [weak self] in self?.raiseMarked() }
         view.onTileAll = { [weak self] in self?.runArrangement { $0.onTileAll?() } }
         view.onDefaultSize = { [weak self] in self?.runArrangement { $0.onDefaultSize?() } }
+        view.onBroadcast = { [weak self] in self?.broadcast() }
+    }
+
+    /// Like raising the marked windows this closes the overview: the bar wants
+    /// the keyboard, and it cannot have it while the overview holds it. The
+    /// previously active app must not come back over the terminals either.
+    private func broadcast() {
+        guard isShowing else { return }
+        previousApp = nil
+        dismiss(activating: false)
+        onBroadcast?()
     }
 
     /// Unlike the other footer actions this one closes the overview: you
@@ -380,7 +393,7 @@ final class SwitcherPanel: NSPanel {
 final class SwitcherView: NSView {
 
     private enum Metrics {
-        static let width: CGFloat = 480
+        static let width: CGFloat = 540
         static let padding: CGFloat = 12
         static let headerHeight: CGFloat = 30
         static let rowHeight: CGFloat = 42
@@ -437,6 +450,11 @@ final class SwitcherView: NSView {
     var onDefaultSize: (() -> Void)? {
         get { footer.onDefaultSize }
         set { footer.onDefaultSize = newValue }
+    }
+
+    var onBroadcast: (() -> Void)? {
+        get { footer.onBroadcast }
+        set { footer.onBroadcast = newValue }
     }
 
     func setActive(_ arrangements: Set<Arrangement>) {
@@ -539,6 +557,7 @@ final class SwitcherView: NSView {
         var onRaiseMarked: (() -> Void)?
         var onTileAll: (() -> Void)?
         var onDefaultSize: (() -> Void)?
+        var onBroadcast: (() -> Void)?
 
         private var isOn = true
         private var active: Set<Arrangement> = []
@@ -646,6 +665,11 @@ final class SwitcherView: NSView {
             result.append(Item(symbol: sized ? "arrow.uturn.backward" : "rectangle.arrowtriangle.2.inward",
                                label: sized ? "Größen zurücknehmen" : "Alle auf Standardgröße",
                                count: 0, colour: nil) { $0.onDefaultSize?() })
+            // Last in the row on purpose: should the row ever outgrow its
+            // space, the trailing ones drop, and the tiling button has
+            // already gone missing once that way.
+            result.append(Item(symbol: "paperplane.fill", label: "An alle schicken",
+                               count: 0, colour: nil) { $0.onBroadcast?() })
             return result
         }
 
@@ -653,7 +677,7 @@ final class SwitcherView: NSView {
         /// everything past this, and the two must never meet.
         private var leftLimit: CGFloat {
             let switchX = bounds.maxX - Metrics.padding - 15 - Switch.width
-            return switchX - 82 - 98 - 18
+            return switchX - 72 - 78 - 18
         }
 
         private func width(of title: String) -> CGFloat {
@@ -664,7 +688,7 @@ final class SwitcherView: NSView {
         /// a click anywhere in the empty footer used to flip it.
         private var toggleRect: CGRect {
             let switchX = bounds.maxX - Metrics.padding - 15 - Switch.width
-            let left = switchX - 82 - 98 - 10
+            let left = switchX - 72 - 78 - 10
             return CGRect(x: left, y: 5, width: bounds.maxX - Metrics.padding - left,
                           height: bounds.height - 10)
         }
@@ -761,8 +785,8 @@ final class SwitcherView: NSView {
                                       width: bounds.width - inset * 2, height: 1)).fill()
 
             let switchX = bounds.maxX - inset - 15 - Switch.width
-            let stateRect = CGRect(x: switchX - 82, y: bounds.midY - 8, width: 70, height: 16)
-            let labelRect = CGRect(x: stateRect.minX - 98, y: bounds.midY - 9, width: 90, height: 18)
+            let stateRect = CGRect(x: switchX - 72, y: bounds.midY - 8, width: 60, height: 16)
+            let labelRect = CGRect(x: stateRect.minX - 78, y: bounds.midY - 9, width: 70, height: 18)
 
             if hotZone == .toggle {
                 let zone = CGRect(x: labelRect.minX - 10, y: 5,

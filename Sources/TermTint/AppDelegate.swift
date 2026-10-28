@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switcher.onRaiseMarked = { [engine] in engine.raiseAllMarked() }
         switcher.onTileAll = { [engine] in engine.tileAllWindows() }
         switcher.onDefaultSize = { [engine] in engine.resizeAllToDefault() }
+        switcher.onBroadcast = { [broadcast] in broadcast.open() }
         switcher.activeArrangements = { [engine] in
             Set([Arrangement.tileAll, .defaultSize].filter(engine.isArrangementActive))
         }
