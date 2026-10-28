@@ -195,6 +195,9 @@ final class HoverEngine {
 
     // MARK: - Menu bar commands
 
+    /// Where the broadcast field sits, so the overlay can keep out of it.
+    var ownPanelFrame: (() -> CGRect?)?
+
     var windowCount: Int { states.values.filter(\.isOnScreen).count }
 
     /// Rows for the ⌥Tab overview.
@@ -621,6 +624,15 @@ final class HoverEngine {
     private func pointerMoved(force: Bool = false) {
         guard isEnabled, !isSuspended, editing == nil else { return }
         let point = NSEvent.mouseLocation
+
+        // The broadcast field lies over the terminals. Pointing at it is not
+        // pointing at the window behind it, and a veil flaring up under your
+        // hands while you type in it is exactly the kind of flicker that
+        // looks like a fault.
+        if let field = ownPanelFrame?(), field.contains(point) {
+            if hovered != nil { hovered = nil; hideNow() }
+            return
+        }
 
         // Fast path: still inside the same window, and no other window's frame
         // reaches this point. Overlapping frames must take the full check —

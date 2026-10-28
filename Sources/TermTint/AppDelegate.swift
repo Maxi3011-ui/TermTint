@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         MainMenu.install()
         broadcast.targetsProvider = { [engine] in engine.broadcastTargets() }
+        engine.ownPanelFrame = { [broadcast] in broadcast.panelFrame }
         menuBar = MenuBarController(engine: engine, broadcast: broadcast)
 
         switcher.entriesProvider = { [engine] in engine.switcherEntries() }

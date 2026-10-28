@@ -57,6 +57,10 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
 
     var isVisible: Bool { isOn }
 
+    /// Where the field is, for anything that must keep out of its way. Nil
+    /// while it is not on screen.
+    var panelFrame: CGRect? { panel.isVisible ? panel.frame : nil }
+
     override init() {
         super.init()
         build()
@@ -133,6 +137,7 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
     private func showPanel() {
         if panel.frame.origin == .zero { panel.center() }
         panel.orderFrontRegardless()
+        Log.write("Rundruf: sichtbar mit \(panel.frame.size)")
     }
 
     // MARK: - Recipients
@@ -366,10 +371,31 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
             list.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
             list.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
             list.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
+
+            // Without these the content's "fitting size" is 24 x 126: every
+            // field in it may shrink to nothing, and AppKit sizes the window
+            // to exactly that when it is first shown — which is how the panel
+            // came up as a bare vertical strip.
+            content.widthAnchor.constraint(greaterThanOrEqualToConstant: 360),
+            content.heightAnchor.constraint(greaterThanOrEqualToConstant: 320),
         ])
 
         panel.contentView = content
+        // The window owns its size; the content follows. Left to auto layout,
+        // the window resizes itself to the content instead.
+        content.translatesAutoresizingMaskIntoConstraints = true
+        content.autoresizingMask = [.width, .height]
         panel.setFrameAutosaveName("Rundruf")
+        Log.write("Rundruf: Rahmen \(panel.frame.size), passend \(content.fittingSize)")
+        // A remembered frame is a convenience, never an order. The panel once
+        // came back 24 points wide — a bare strip — and restored that
+        // faithfully on every launch. Anything smaller than it can sensibly
+        // be is thrown away.
+        if panel.frame.width < BroadcastPanel.minimum.width
+            || panel.frame.height < BroadcastPanel.minimum.height {
+            panel.setContentSize(NSSize(width: 360, height: 320))
+            panel.center()
+        }
     }
 
     private func button(_ title: String, _ action: Selector) -> NSButton {
@@ -406,14 +432,21 @@ private final class DotView: NSView {
 /// keeps its own cursor, and stays put across desks.
 final class BroadcastPanel: NSPanel {
 
+    /// Below this the field is not a field any more.
+    static let minimum = NSSize(width: 300, height: 220)
+
     init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 360, height: 320),
                    styleMask: [.titled, .closable, .utilityWindow, .nonactivatingPanel],
                    backing: .buffered,
                    defer: false)
         title = "An alle"
+        minSize = Self.minimum
         isFloatingPanel = true
-        level = .floating
+        // Above the hover overlay. Both at .floating meant the two had no
+        // defined order, and the milky veil could end up lying on top of the
+        // field — the field is in front, so it has to be the higher level.
+        level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 2)
         hidesOnDeactivate = false
         becomesKeyOnlyIfNeeded = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
