@@ -217,6 +217,22 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
     /// a quote or a backslash in a prompt would otherwise break the script or,
     /// worse, change what it does.
     private static func deliver(_ text: String, to windowIDs: [Int]) -> Int {
+        let sent = run(text, in: windowIDs)
+        // Claude Code does not send the line yet: text and line ending arrive
+        // in one go, and that reads as pasted text, which is allowed to carry
+        // newlines. The prompt sits in the input box and waits. A second,
+        // separate return is what submits it — the short pause matters, two
+        // writes in the same instant arrive as one chunk again.
+        guard sent > 0 else { return sent }
+        Thread.sleep(forTimeInterval: 0.35)
+        _ = run("", in: windowIDs)
+        return sent
+    }
+
+    /// The text is handed over as an argument, never pasted into the script —
+    /// a quote or a backslash in a prompt would otherwise break the script or,
+    /// worse, change what it does.
+    private static func run(_ text: String, in windowIDs: [Int]) -> Int {
         let script = """
         on run argv
           set t to item 1 of argv
