@@ -41,6 +41,8 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
     private let view = BroadcastView()
     private var targets: [Target] = []
     private var hotKeys: [GlobalHotKey] = []
+    /// Who had the keyboard before, if TermTint had to come forward for it.
+    private var previousApp: NSRunningApplication?
 
     private var isOn: Bool {
         get { UserDefaults.standard.bool(forKey: "broadcastOpen") }
@@ -94,6 +96,25 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         isOn = true
         reload()
         showPanel()
+        takeKeyboard()
+    }
+
+    /// Open means ready to type. Ordering the bar out front is not enough —
+    /// the keyboard still goes to the terminal until the panel is the key
+    /// window and the field is the one waiting for the keys.
+    ///
+    /// A palette panel is meant to take the keyboard without activating the
+    /// app, and while that holds the terminal underneath keeps its own cursor.
+    /// Should it not hold, TermTint comes forward for the moment of typing and
+    /// hands the terminal back afterwards — the same thing naming a window in
+    /// the overlay does.
+    private func takeKeyboard() {
+        panel.makeKeyAndOrderFront(nil)
+        if !panel.isKeyWindow {
+            previousApp = NSWorkspace.shared.frontmostApplication
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
+        }
         panel.makeFirstResponder(view.field)
     }
 
@@ -101,6 +122,10 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         isOn = false
         onPicking?(false)
         panel.orderOut(nil)
+        if NSApp.isActive, let previousApp, !previousApp.isTerminated {
+            previousApp.activate()
+        }
+        previousApp = nil
     }
 
     /// Sheets over the terminals; tap the ones that should get it, ⏎ ends it.
@@ -112,7 +137,7 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
     /// The engine says the picking is over — show what came out of it.
     func pickingFinished() {
         reload()
-        panel.makeFirstResponder(view.field)
+        takeKeyboard()
     }
 
     /// Only while Terminal is in front — the bar is for the terminals, not
@@ -139,8 +164,10 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         guard isOn else { return panel.orderOut(nil) }
         let wanted = front == "com.apple.Terminal" || front == Bundle.main.bundleIdentifier
         guard wanted else { return panel.orderOut(nil) }
-        if !panel.isVisible { reload() }
+        let wasHidden = !panel.isVisible
+        if wasHidden { reload() }
         showPanel()
+        if wasHidden { takeKeyboard() }
     }
 
     /// Follows the window it hangs under. Without one — no terminal focused,
