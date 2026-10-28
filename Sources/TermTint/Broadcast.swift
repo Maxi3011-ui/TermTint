@@ -153,10 +153,13 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         }
         let size = view.wantedSize
         if panel.frame.size != size { panel.setContentSize(size) }
-        // Like Spotlight: centred over the window you are working in, a third
-        // of the way down, not clamped to an edge.
-        let origin = CGPoint(x: anchor.midX - size.width / 2,
-                             y: anchor.maxY - anchor.height * 0.32 - size.height / 2)
+        // Dead centre of the screen the terminal is on — like Spotlight, and
+        // always in the same place, so the eye does not have to look for it.
+        let screen = NSScreen.screens.first { $0.frame.intersects(anchor) }
+            ?? NSScreen.main ?? NSScreen.screens[0]
+        let visible = screen.visibleFrame
+        let origin = CGPoint(x: visible.midX - size.width / 2,
+                             y: visible.midY - size.height / 2)
         if panel.frame.origin != origin { panel.setFrameOrigin(origin) }
         if !panel.isVisible { panel.orderFrontRegardless() }
     }
@@ -204,7 +207,9 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
             DispatchQueue.main.async {
                 guard let self else { return }
                 if sent == receivers.count {
-                    self.view.say("✓ an \(sent) \(sent == 1 ? "Chat" : "Chats")", warning: false)
+                    // Gone — so the bar gets out of the way by itself. The
+                    // next prompt opens it again, in the same spot.
+                    self.close()
                 } else {
                     self.view.say("nur \(sent) von \(receivers.count) erreicht", warning: true)
                 }
