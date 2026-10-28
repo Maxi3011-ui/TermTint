@@ -4,10 +4,16 @@ import Carbon.HIToolbox
 /// Rundruf: one line of text, sent to several chats at once.
 ///
 /// Twenty parallel sessions often need the same sentence — "lies die Regeln
-/// neu", "commit und push". Typing it twenty times is the whole problem. The
-/// field stays a palette: it takes the keyboard without activating TermTint,
-/// so the terminal you are looking at keeps its own focus, and it only shows
-/// itself while Terminal is the app in front.
+/// neu", "commit und push". Typing it twenty times is the whole problem.
+///
+/// Who gets it is not picked in here. The red dots on the windows already are
+/// that list: you point at the terminals you mean and set their dot, exactly
+/// as for everything else TermTint does with a handful of windows at once.
+/// A second list of checkboxes beside them would only be a second truth.
+///
+/// The bar stays a palette: it takes the keyboard without activating TermTint,
+/// so the terminal you are looking at keeps its own cursor, and it shows
+/// itself only while Terminal is the app in front.
 final class Broadcast: NSObject, NSTextFieldDelegate {
 
     struct Target {
@@ -19,37 +25,18 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         let isMinimized: Bool
     }
 
-    /// Every window TermTint knows, in the order the overview would show them.
     var targetsProvider: (() -> [Target])?
 
+    /// The window the bar hangs under: the terminal with the keyboard. It is
+    /// not a window of its own standing over everything — it belongs to the
+    /// terminal you are working in and goes where that goes.
+    var anchorProvider: (() -> CGRect?)?
+
     private let panel = BroadcastPanel()
-    private let field = NSTextField()
-    private let status = NSTextField(labelWithString: "")
-    private let followBox = NSButton()
-    private let list = NSStackView()
-    private let quick = NSStackView()
+    private let view = BroadcastView()
     private var targets: [Target] = []
-    private var checkboxes: [NSButton] = []
     private var hotKey: GlobalHotKey?
 
-    /// Which chats are ticked by hand. Kept by name, because that is what
-    /// survives a restart of Terminal — window ids do not, and a recycled id
-    /// would aim the next broadcast at a window nobody picked.
-    private var chosen: Set<String> {
-        get { Set(UserDefaults.standard.stringArray(forKey: "broadcast") ?? []) }
-        set { UserDefaults.standard.set(Array(newValue).sorted(), forKey: "broadcast") }
-    }
-
-    /// Follow the red dots instead of a hand-picked list. Then the recipients
-    /// are whatever is marked right now — marking a chat adds it, taking the
-    /// dot off removes it, and nothing has to be kept in two places.
-    private var followsMarks: Bool {
-        get { UserDefaults.standard.bool(forKey: "broadcastFollowsMarks") }
-        set { UserDefaults.standard.set(newValue, forKey: "broadcastFollowsMarks") }
-    }
-
-    /// Whether the field is wanted at all. It hides and comes back with
-    /// Terminal, so "is it on screen" is no answer to "did he open it".
     private var isOn: Bool {
         get { UserDefaults.standard.bool(forKey: "broadcastOpen") }
         set { UserDefaults.standard.set(newValue, forKey: "broadcastOpen") }
@@ -57,24 +44,27 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
 
     var isVisible: Bool { isOn }
 
-    /// Where the field is, for anything that must keep out of its way. Nil
-    /// while it is not on screen.
+    /// Where the bar sits, for anything that must keep out of its way.
     var panelFrame: CGRect? { panel.isVisible ? panel.frame : nil }
 
     override init() {
         super.init()
-        build()
+        panel.contentView = view
+        panel.setContentSize(view.wantedSize)
+        view.field.delegate = self
+        view.field.target = self
+        view.field.action = #selector(send)
+        view.onClose = { [weak self] in self?.close() }
 
         hotKey = GlobalHotKey(keyCode: UInt32(kVK_ANSI_A), modifiers: UInt32(optionKey | cmdKey)) { [weak self] in
             DispatchQueue.main.async { self?.toggle() }
         }
-        Log.write("Rundruf: ⌥⌘A \(hotKey == nil ? "NICHT registriert (belegt?)" : "registriert")")
 
         let workspace = NSWorkspace.shared.notificationCenter
         workspace.addObserver(self, selector: #selector(appActivated(_:)),
                               name: NSWorkspace.didActivateApplicationNotification, object: nil)
         // Second, independent signal: Terminal stepping down. If the one
-        // notification is ever missed, the field must still get out of the way.
+        // notification is ever missed, the bar must still get out of the way.
         workspace.addObserver(self, selector: #selector(appDeactivated(_:)),
                               name: NSWorkspace.didDeactivateApplicationNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(marksChanged),
@@ -85,15 +75,13 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
 
     // MARK: - Opening and closing
 
-    func toggle() {
-        isOn ? close() : open()
-    }
+    func toggle() { isOn ? close() : open() }
 
     func open() {
         isOn = true
         reload()
         showPanel()
-        panel.makeFirstResponder(field)
+        panel.makeFirstResponder(view.field)
     }
 
     func close() {
@@ -101,43 +89,56 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         panel.orderOut(nil)
     }
 
-    /// Only while Terminal is in front — the field is for the terminals, not
+    /// Only while Terminal is in front — the bar is for the terminals, not
     /// something to lie over every other app.
     ///
     /// The app comes out of the notification itself, never from
     /// `frontmostApplication`: at this moment that property still names the
     /// *previous* app, so switching from Terminal to the browser read back
-    /// "Terminal", the field stayed lying there, and no further notification
-    /// ever came to correct it.
+    /// "Terminal" and the bar stayed lying there.
     @objc private func appActivated(_ note: Notification) {
         syncVisibility(front: Self.app(in: note))
     }
 
     @objc private func appDeactivated(_ note: Notification) {
         guard Self.app(in: note) == "com.apple.Terminal" else { return }
-        // Who takes over is only known a moment later, from the activation
-        // notification. Until then the field is wrong where it is.
         syncVisibility(front: nil)
     }
 
     private static func app(in note: Notification) -> String? {
-        let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-        return app?.bundleIdentifier
+        (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
     }
 
     private func syncVisibility(front: String?) {
         guard isOn else { return panel.orderOut(nil) }
         let wanted = front == "com.apple.Terminal" || front == Bundle.main.bundleIdentifier
-        Log.write("Rundruf: vorne \(front ?? "—") -> \(wanted ? "zeigen" : "ausblenden")")
         guard wanted else { return panel.orderOut(nil) }
         if !panel.isVisible { reload() }
         showPanel()
     }
 
+    /// Follows the window it hangs under. Without one — no terminal focused,
+    /// minimised, another desk — there is nothing to hang under, and the bar
+    /// waits rather than floating around on its own.
+    func redock() {
+        guard isOn, let anchor = anchorProvider?() else {
+            if panel.isVisible { panel.orderOut(nil) }
+            return
+        }
+        let size = view.wantedSize
+        if panel.frame.size != size { panel.setContentSize(size) }
+        let origin = CGPoint(x: anchor.midX - size.width / 2, y: anchor.minY + 12)
+        if panel.frame.origin != origin { panel.setFrameOrigin(origin) }
+        if !panel.isVisible { panel.orderFrontRegardless() }
+    }
+
+    /// Bottom centre of the screen the pointer is on, like a notification
+    /// bar — out of the way of the title bars, where the overlays live.
+    /// Hangs the bar on the lower edge of the terminal you are working in.
+    /// No remembered position, no window of its own to push around — it is
+    /// part of that window for as long as it is the one in front.
     private func showPanel() {
-        if panel.frame.origin == .zero { panel.center() }
-        panel.orderFrontRegardless()
-        Log.write("Rundruf: sichtbar mit \(panel.frame.size)")
+        redock()
     }
 
     // MARK: - Recipients
@@ -147,127 +148,35 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         reload()
     }
 
-    /// Rebuilt every time it is shown: windows come and go, and a tick on a
-    /// chat that is gone would send nothing while looking as if it had.
     private func reload() {
         targets = targetsProvider?() ?? []
-        let follow = followsMarks
-        followBox.state = follow ? .on : .off
-        for case let button as NSButton in quick.views { button.isEnabled = !follow }
-
-        list.setViews([], in: .leading)
-        checkboxes = []
-
-        for target in targets {
-            let row = NSStackView()
-            row.orientation = .horizontal
-            row.spacing = 6
-            row.alignment = .centerY
-
-            let box = NSButton(checkboxWithTitle: target.name.isEmpty ? "Ohne Namen" : target.name,
-                               target: self, action: #selector(tick(_:)))
-            box.tag = checkboxes.count
-            box.font = .systemFont(ofSize: 12)
-            // While the red dots are in charge, the ticks show what that
-            // means rather than pretending to be editable.
-            box.state = (follow ? target.isMarked : chosen.contains(target.name)) ? .on : .off
-            box.isEnabled = !follow
-            checkboxes.append(box)
-
-            row.addView(DotView(color: target.tint.base.withAlphaComponent(0.9)), in: .leading)
-            if target.isMarked { row.addView(DotView(color: .systemRed), in: .leading) }
-            row.addView(box, in: .leading)
-
-            if target.isMinimized {
-                let tag = NSTextField(labelWithString: "im Dock")
-                tag.font = .systemFont(ofSize: 10)
-                tag.textColor = .tertiaryLabelColor
-                row.addView(tag, in: .leading)
-            }
-
-            list.addView(row, in: .leading)
-        }
-
-        updateStatus()
+        view.show(recipients: targets.filter(\.isMarked))
+        redock()
     }
 
-    @objc private func tick(_ sender: NSButton) {
-        guard targets.indices.contains(sender.tag) else { return }
-        let name = targets[sender.tag].name
-        var set = chosen
-        if sender.state == .on { set.insert(name) } else { set.remove(name) }
-        chosen = set
-        updateStatus()
-    }
-
-    /// The tie-in with the red dots: on, the recipients are the marked chats
-    /// and follow every dot you set; off, your own ticks count again — and
-    /// they were kept while the dots were in charge, so they come back
-    /// exactly as they were.
-    @objc private func toggleFollow() {
-        followsMarks = followBox.state == .on
-        reload()
-    }
-
-    @objc private func chooseAll() {
-        chosen = Set(targets.map(\.name))
-        reload()
-    }
-
-    @objc private func chooseMarked() {
-        chosen = Set(targets.filter(\.isMarked).map(\.name))
-        reload()
-    }
-
-    @objc private func chooseNone() {
-        chosen = []
-        reload()
-    }
-
-    private var selectedTargets: [Target] {
-        guard !followsMarks else { return targets.filter(\.isMarked) }
-        let set = chosen
-        return targets.filter { set.contains($0.name) }
-    }
-
-    private func updateStatus() {
-        let count = selectedTargets.count
-        let source = followsMarks ? " (rot)" : ""
-        switch count {
-        case 0: status.stringValue = followsMarks ? "Kein Chat rot markiert" : "Niemand ausgewählt"
-        case 1: status.stringValue = "Enter → 1 Chat" + source
-        default: status.stringValue = "Enter → \(count) Chats" + source
-        }
-        status.textColor = .secondaryLabelColor
-    }
+    private var recipients: [Target] { targets.filter(\.isMarked) }
 
     // MARK: - Sending
 
     @objc private func send() {
-        let text = field.stringValue
-        let receivers = selectedTargets
+        let text = view.field.stringValue
+        let receivers = recipients
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard !receivers.isEmpty else {
-            status.stringValue = followsMarks ? "Erst einen Chat rot markieren" : "Erst Chats auswählen"
-            status.textColor = .systemOrange
+            view.say(" Erst einen Chat mit dem roten Punkt markieren", warning: true)
             return
         }
 
-        field.stringValue = ""
-        status.stringValue = "schickt …"
-        status.textColor = .secondaryLabelColor
-
+        view.field.stringValue = ""
         let ids = receivers.map(\.windowID)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let sent = Self.deliver(text, to: ids)
             DispatchQueue.main.async {
                 guard let self else { return }
                 if sent == receivers.count {
-                    self.status.stringValue = "✓ an \(sent) Chats"
-                    self.status.textColor = .secondaryLabelColor
+                    self.view.say("✓ an \(sent) \(sent == 1 ? "Chat" : "Chats")", warning: false)
                 } else {
-                    self.status.stringValue = "nur \(sent) von \(receivers.count) erreicht"
-                    self.status.textColor = .systemOrange
+                    self.view.say("nur \(sent) von \(receivers.count) erreicht", warning: true)
                 }
                 Log.write("Rundruf: an \(sent)/\(receivers.count) Chats")
             }
@@ -306,125 +215,202 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         return Int(answer) ?? 0
     }
 
-    // MARK: - Layout
+    // MARK: - Field
 
-    private func build() {
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 320))
-
-        field.placeholderString = "Prompt an die ausgewählten Chats …"
-        field.font = .systemFont(ofSize: 13)
-        field.target = self
-        field.action = #selector(send)
-        field.delegate = self
-
-        status.font = .systemFont(ofSize: 11)
-
-        followBox.setButtonType(.switch)
-        followBox.title = "Den roten Punkten folgen"
-        followBox.font = .systemFont(ofSize: 12)
-        followBox.target = self
-        followBox.action = #selector(toggleFollow)
-
-        quick.setViews([button("Alle", #selector(chooseAll)),
-                        button("Rot übernehmen", #selector(chooseMarked)),
-                        button("Keiner", #selector(chooseNone))], in: .leading)
-        quick.spacing = 6
-
-        list.orientation = .vertical
-        list.alignment = .leading
-        list.spacing = 2
-        list.edgeInsets = NSEdgeInsets(top: 4, left: 2, bottom: 4, right: 2)
-
-        let scroll = NSScrollView()
-        scroll.hasVerticalScroller = true
-        scroll.drawsBackground = false
-        scroll.borderType = .noBorder
-        scroll.documentView = list
-
-        for view in [field, status, followBox, quick, scroll] {
-            view.translatesAutoresizingMaskIntoConstraints = false
-            content.addSubview(view)
-        }
-
-        NSLayoutConstraint.activate([
-            field.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
-            field.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
-            field.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
-
-            status.topAnchor.constraint(equalTo: field.bottomAnchor, constant: 6),
-            status.leadingAnchor.constraint(equalTo: field.leadingAnchor),
-
-            followBox.topAnchor.constraint(equalTo: status.bottomAnchor, constant: 8),
-            followBox.leadingAnchor.constraint(equalTo: field.leadingAnchor),
-
-            quick.topAnchor.constraint(equalTo: followBox.bottomAnchor, constant: 6),
-            quick.leadingAnchor.constraint(equalTo: field.leadingAnchor),
-
-            scroll.topAnchor.constraint(equalTo: quick.bottomAnchor, constant: 8),
-            scroll.leadingAnchor.constraint(equalTo: field.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: field.trailingAnchor),
-            scroll.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
-
-            // A stack view inside a scroll view has no width of its own: left
-            // to itself it collapses, and the list looks empty even though the
-            // rows are there.
-            list.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor),
-            list.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor),
-            list.topAnchor.constraint(equalTo: scroll.contentView.topAnchor),
-
-            // Without these the content's "fitting size" is 24 x 126: every
-            // field in it may shrink to nothing, and AppKit sizes the window
-            // to exactly that when it is first shown — which is how the panel
-            // came up as a bare vertical strip.
-            content.widthAnchor.constraint(greaterThanOrEqualToConstant: 360),
-            content.heightAnchor.constraint(greaterThanOrEqualToConstant: 320),
-        ])
-
-        panel.contentView = content
-        // The window owns its size; the content follows. Left to auto layout,
-        // the window resizes itself to the content instead.
-        content.translatesAutoresizingMaskIntoConstraints = true
-        content.autoresizingMask = [.width, .height]
-        panel.setFrameAutosaveName("Rundruf")
-        Log.write("Rundruf: Rahmen \(panel.frame.size), passend \(content.fittingSize)")
-        // A remembered frame is a convenience, never an order. The panel once
-        // came back 24 points wide — a bare strip — and restored that
-        // faithfully on every launch. Anything smaller than it can sensibly
-        // be is thrown away.
-        if panel.frame.width < BroadcastPanel.minimum.width
-            || panel.frame.height < BroadcastPanel.minimum.height {
-            panel.setContentSize(NSSize(width: 360, height: 320))
-            panel.center()
-        }
-    }
-
-    private func button(_ title: String, _ action: Selector) -> NSButton {
-        let item = NSButton(title: title, target: self, action: action)
-        item.bezelStyle = .rounded
-        item.controlSize = .small
-        item.font = .systemFont(ofSize: 11)
-        return item
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+        close()
+        return true
     }
 }
 
-/// A plain coloured dot — the window's own colour, so a row is recognised
-/// without reading it.
-private final class DotView: NSView {
-    private let color: NSColor
+// MARK: - The bar itself
 
-    init(color: NSColor) {
-        self.color = color
-        super.init(frame: NSRect(x: 0, y: 0, width: 8, height: 8))
-        translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: 8).isActive = true
-        heightAnchor.constraint(equalToConstant: 8).isActive = true
+/// A slim HUD bar: one line to type in, underneath it who it goes to.
+final class BroadcastView: NSView {
+
+    private enum Metrics {
+        static let width: CGFloat = 420
+        static let padding: CGFloat = 14
+        static let fieldHeight: CGFloat = 26
+        static let gap: CGFloat = 10
+        static let captionHeight: CGFloat = 14
+        static let corner: CGFloat = 14
+    }
+
+    let field = NSTextField()
+    private let caption = NSTextField(labelWithString: "")
+    private let chips = ChipsView()
+    private let effect = NSVisualEffectView()
+    private let close = NSButton()
+
+    var onClose: (() -> Void)?
+
+    /// Grows with the number of recipients, never with the window.
+    var wantedSize: CGSize {
+        let chipsHeight = chips.height(forWidth: Metrics.width - Metrics.padding * 2)
+        return CGSize(width: Metrics.width,
+                      height: Metrics.padding * 2 + Metrics.fieldHeight + Metrics.gap
+                          + chipsHeight + 6 + Metrics.captionHeight)
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+
+        effect.material = .hudWindow
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.wantsLayer = true
+        effect.layer?.cornerRadius = Metrics.corner
+        effect.layer?.cornerCurve = .continuous
+        effect.layer?.masksToBounds = true
+        effect.layer?.borderWidth = 1
+        effect.layer?.borderColor = NSColor(white: 1, alpha: 0.12).cgColor
+        addSubview(effect)
+
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = .systemFont(ofSize: 14)
+        field.textColor = .white
+        field.placeholderAttributedString = NSAttributedString(
+            string: "An die markierten Chats …",
+            attributes: [.font: NSFont.systemFont(ofSize: 14),
+                         .foregroundColor: NSColor(white: 1, alpha: 0.35)])
+        field.usesSingleLineMode = true
+        addSubview(field)
+
+        caption.font = .systemFont(ofSize: 11)
+        caption.textColor = NSColor(white: 1, alpha: 0.45)
+        addSubview(caption)
+
+        addSubview(chips)
+
+        close.isBordered = false
+        close.bezelStyle = .inline
+        close.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "schließen")
+        close.contentTintColor = NSColor(white: 1, alpha: 0.4)
+        close.target = self
+        close.action = #selector(closePressed)
+        addSubview(close)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    override func draw(_ dirtyRect: NSRect) {
-        color.setFill()
-        NSBezierPath(ovalIn: bounds).fill()
+    @objc private func closePressed() { onClose?() }
+
+    func show(recipients: [Broadcast.Target]) {
+        chips.items = recipients.map { ($0.name.isEmpty ? "Ohne Namen" : $0.name, $0.tint.base) }
+        switch recipients.count {
+        case 0: say("Noch kein Chat markiert — roten Punkt am Fenster setzen", warning: false)
+        case 1: say("⏎ schickt an 1 Chat", warning: false)
+        case let count: say("⏎ schickt an \(count) Chats", warning: false)
+        }
+        needsLayout = true
+    }
+
+    func say(_ text: String, warning: Bool) {
+        caption.stringValue = text
+        caption.textColor = warning ? NSColor.systemOrange : NSColor(white: 1, alpha: 0.45)
+    }
+
+    override func layout() {
+        super.layout()
+        effect.frame = bounds
+        let inner = bounds.insetBy(dx: Metrics.padding, dy: Metrics.padding)
+
+        close.frame = CGRect(x: bounds.maxX - 24, y: bounds.maxY - 24, width: 16, height: 16)
+
+        field.frame = CGRect(x: inner.minX, y: inner.maxY - Metrics.fieldHeight,
+                             width: inner.width - 20, height: Metrics.fieldHeight)
+
+        let chipsHeight = chips.height(forWidth: inner.width)
+        chips.frame = CGRect(x: inner.minX,
+                             y: field.frame.minY - Metrics.gap - chipsHeight,
+                             width: inner.width, height: chipsHeight)
+
+        caption.frame = CGRect(x: inner.minX, y: inner.minY,
+                               width: inner.width, height: Metrics.captionHeight)
+    }
+
+    /// The window's own colour next to each name, so the row of recipients is
+    /// recognised the same way the overlays are.
+    private final class ChipsView: NSView {
+
+        var items: [(String, NSColor)] = [] { didSet { needsDisplay = true; needsLayout = true } }
+
+        private enum Chip {
+            static let height: CGFloat = 20
+            static let spacing: CGFloat = 6
+            static let inset: CGFloat = 8
+            static let dot: CGFloat = 7
+            static let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        }
+
+        private func width(of title: String) -> CGFloat {
+            Chip.inset + Chip.dot + 5
+                + ceil((title as NSString).size(withAttributes: [.font: Chip.font]).width)
+                + Chip.inset
+        }
+
+        /// Wraps into as many lines as it takes — twenty marked chats must
+        /// still be readable, not cut off at the edge.
+        private func rows(forWidth available: CGFloat) -> [[(String, NSColor, CGFloat)]] {
+            var result: [[(String, NSColor, CGFloat)]] = []
+            var line: [(String, NSColor, CGFloat)] = []
+            var x: CGFloat = 0
+            for (title, colour) in items {
+                let w = min(width(of: title), available)
+                if !line.isEmpty, x + w > available {
+                    result.append(line)
+                    line = []
+                    x = 0
+                }
+                line.append((title, colour, w))
+                x += w + Chip.spacing
+            }
+            if !line.isEmpty { result.append(line) }
+            return result
+        }
+
+        func height(forWidth available: CGFloat) -> CGFloat {
+            let count = rows(forWidth: available).count
+            guard count > 0 else { return Chip.height }
+            return CGFloat(count) * Chip.height + CGFloat(count - 1) * Chip.spacing
+        }
+
+        override func draw(_ dirtyRect: NSRect) {
+            let lines = rows(forWidth: bounds.width)
+            guard !lines.isEmpty else { return }
+            var y = bounds.maxY - Chip.height
+            for line in lines {
+                var x = bounds.minX
+                for (title, colour, w) in line {
+                    let rect = CGRect(x: x, y: y, width: w, height: Chip.height)
+                    let path = NSBezierPath(roundedRect: rect, xRadius: Chip.height / 2,
+                                            yRadius: Chip.height / 2)
+                    NSColor(white: 1, alpha: 0.10).setFill()
+                    path.fill()
+
+                    let dot = CGRect(x: rect.minX + Chip.inset, y: rect.midY - Chip.dot / 2,
+                                     width: Chip.dot, height: Chip.dot)
+                    colour.withAlphaComponent(0.95).setFill()
+                    NSBezierPath(ovalIn: dot).fill()
+
+                    let text = title as NSString
+                    let attributes: [NSAttributedString.Key: Any] = [
+                        .font: Chip.font,
+                        .foregroundColor: NSColor(white: 1, alpha: 0.85),
+                    ]
+                    let textRect = CGRect(x: dot.maxX + 5, y: rect.midY - 7,
+                                          width: rect.maxX - Chip.inset - (dot.maxX + 5), height: 14)
+                    text.draw(in: textRect, withAttributes: attributes)
+                    x += w + Chip.spacing
+                }
+                y -= Chip.height + Chip.spacing
+            }
+        }
     }
 }
 
@@ -432,27 +418,28 @@ private final class DotView: NSView {
 /// keeps its own cursor, and stays put across desks.
 final class BroadcastPanel: NSPanel {
 
-    /// Below this the field is not a field any more.
-    static let minimum = NSSize(width: 300, height: 220)
-
     init() {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 360, height: 320),
-                   styleMask: [.titled, .closable, .utilityWindow, .nonactivatingPanel],
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 420, height: 110),
+                   styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered,
                    defer: false)
-        title = "An alle"
-        minSize = Self.minimum
-        isFloatingPanel = true
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        // Without this the panel inherits the light system appearance and the
+        // frosted material washes out.
+        appearance = NSAppearance(named: .darkAqua)
         // Above the hover overlay. Both at .floating meant the two had no
-        // defined order, and the milky veil could end up lying on top of the
-        // field — the field is in front, so it has to be the higher level.
+        // defined order, and the milky veil could end up lying on top.
         level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 2)
+        isMovable = false
         hidesOnDeactivate = false
         becomesKeyOnlyIfNeeded = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         isReleasedWhenClosed = false
-        animationBehavior = .utilityWindow
+        animationBehavior = .none
     }
 
     override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
 }

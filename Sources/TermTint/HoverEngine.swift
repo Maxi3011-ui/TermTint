@@ -198,6 +198,19 @@ final class HoverEngine {
     /// Where the broadcast field sits, so the overlay can keep out of it.
     var ownPanelFrame: (() -> CGRect?)?
 
+    /// Called whenever windows may have moved, so anything docked to a window
+    /// can follow it.
+    var onLayoutChanged: (() -> Void)?
+
+    /// The window the broadcast bar docks to: the one with the keyboard.
+    /// Minimised or off-screen windows have nothing to dock to.
+    func focusedTerminalFrame() -> CGRect? {
+        guard let ref = watcher.focusedWindow, let state = states[ref],
+              state.isOnScreen, !state.isMinimized
+        else { return nil }
+        return state.frame
+    }
+
     var windowCount: Int { states.values.filter(\.isOnScreen).count }
 
     /// Rows for the ⌥Tab overview.
@@ -1412,6 +1425,7 @@ final class HoverEngine {
         updateVeils(visible: visible)
         updateMarkDots(visible: visible)
         syncAttachmentTicker()
+        onLayoutChanged?()
     }
 
     private func visibleWindowIDs() -> Set<Int> {

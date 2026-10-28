@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainMenu.install()
         broadcast.targetsProvider = { [engine] in engine.broadcastTargets() }
         engine.ownPanelFrame = { [broadcast] in broadcast.panelFrame }
+        broadcast.anchorProvider = { [engine] in engine.focusedTerminalFrame() }
+        engine.onLayoutChanged = { [broadcast] in broadcast.redock() }
         menuBar = MenuBarController(engine: engine, broadcast: broadcast)
 
         switcher.entriesProvider = { [engine] in engine.switcherEntries() }
@@ -28,7 +30,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switcher.onRestoreAll = { [engine] in engine.restoreAllMinimized() }
         switcher.onMinimizeFrozen = { [engine] in engine.minimizeAllFrozen() }
         switcher.onRaiseMarked = { [engine] in engine.raiseAllMarked() }
-        switcher.onBroadcast = { [broadcast] in broadcast.open() }
         switcher.onTileAll = { [engine] in engine.tileAllWindows() }
         switcher.onDefaultSize = { [engine] in engine.resizeAllToDefault() }
         switcher.activeArrangements = { [engine] in

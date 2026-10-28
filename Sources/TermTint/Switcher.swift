@@ -43,10 +43,6 @@ final class Switcher {
     var onRestoreAll: (() -> Void)?
     /// Puts every paused window into the Dock.
     var onMinimizeFrozen: (() -> Void)?
-    /// Opens the broadcast field — one prompt for several chats at once. It
-    /// lives here because this is where the chats and their red dots are.
-    var onBroadcast: (() -> Void)?
-
     /// Brings every marked window to the front.
     var onRaiseMarked: (() -> Void)?
     /// Spreads every visible window over one screen, and takes it back.
@@ -83,7 +79,6 @@ final class Switcher {
         view.onRestoreAll = { [weak self] in self?.restoreAll() }
         view.onMinimizeFrozen = { [weak self] in self?.minimizeFrozen() }
         view.onRaiseMarked = { [weak self] in self?.raiseMarked() }
-        view.onBroadcast = { [weak self] in self?.onBroadcast?() }
         view.onTileAll = { [weak self] in self?.runArrangement { $0.onTileAll?() } }
         view.onDefaultSize = { [weak self] in self?.runArrangement { $0.onDefaultSize?() } }
     }
@@ -434,11 +429,6 @@ final class SwitcherView: NSView {
         set { footer.onRaiseMarked = newValue }
     }
 
-    var onBroadcast: (() -> Void)? {
-        get { footer.onBroadcast }
-        set { footer.onBroadcast = newValue }
-    }
-
     var onTileAll: (() -> Void)? {
         get { footer.onTileAll }
         set { footer.onTileAll = newValue }
@@ -547,7 +537,6 @@ final class SwitcherView: NSView {
         var onRestoreAll: (() -> Void)?
         var onMinimizeFrozen: (() -> Void)?
         var onRaiseMarked: (() -> Void)?
-        var onBroadcast: (() -> Void)?
         var onTileAll: (() -> Void)?
         var onDefaultSize: (() -> Void)?
 
@@ -632,10 +621,7 @@ final class SwitcherView: NSView {
         }
 
         private var items: [Item] {
-            // First on purpose: the row drops its trailing entries when space
-            // runs out, and this one must always be reachable.
-            var result: [Item] = [Item(symbol: "paperplane.fill", label: "An alle schicken (⌥⌘A)",
-                                       count: 0, colour: nil) { $0.onBroadcast?() }]
+            var result: [Item] = []
             if minimizedCount > 0 {
                 result.append(Item(symbol: "macwindow.on.rectangle", label: "Alle einblenden",
                                    count: minimizedCount, colour: nil) { $0.onRestoreAll?() })
