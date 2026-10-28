@@ -182,8 +182,8 @@ final class HoverEngine {
                                           NSWorkspace.didActivateApplicationNotification,
                                           NSWorkspace.didHideApplicationNotification,
                                           NSWorkspace.didUnhideApplicationNotification] {
-            monitors.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                self?.refreshAttachments()
+            monitors.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                self?.appsChanged(note)
             } as Any)
         }
 
@@ -1498,6 +1498,35 @@ final class HoverEngine {
     /// desks changes nothing the watcher reports, and a veil or a mark dot
     /// whose window went away stays lying on the desktop.
     /// Veils and mark dots together, off one list.
+    /// Another app coming forward is the one case the window list answers too
+    /// late: for a moment the terminals still count as "on screen" although
+    /// something is already lying over them, and their red dots and freeze
+    /// veils hang in the air over the new app. So they are taken down at once,
+    /// on the word of the notification itself — `frontmostApplication` still
+    /// names the previous app at this instant — and put back a moment later
+    /// if the terminals turn out to still be visible beside it.
+    private func appsChanged(_ note: Notification) {
+        let app = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?
+            .bundleIdentifier
+        let ours = app == "com.apple.Terminal" || app == Bundle.main.bundleIdentifier
+        if note.name == NSWorkspace.didActivateApplicationNotification, !ours {
+            hideAttachments()
+            // Long enough for the new app's window to be in the list, short
+            // enough not to be noticed if the terminals are still there.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.refreshAttachments()
+            }
+            return
+        }
+        refreshAttachments()
+    }
+
+    private func hideAttachments() {
+        for veil in veils.values { veil.hide() }
+        for dot in markDots.values { dot.hide() }
+        for veil in pickVeils.values { veil.hide() }
+    }
+
     private func refreshAttachments() {
         let visible = visibleWindowIDs()
         updateVeils(visible: visible)

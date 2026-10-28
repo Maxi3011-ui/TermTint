@@ -271,7 +271,12 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         // writes in the same instant arrive as one chunk again.
         guard sent > 0 else { return sent }
         Thread.sleep(forTimeInterval: 0.35)
-        _ = run("", in: windowIDs)
+        // A carriage return, not an empty line. Pressing Return in a terminal
+        // sends CR (13); a line feed is what Claude Code treats as "new line
+        // inside the prompt", which is why the text sat in the input box and
+        // waited. The empty script before sent exactly that line feed.
+        let submitted = run("\r", in: windowIDs)
+        Log.write("Rundruf: Text an \(sent), Return an \(submitted)")
         return sent
     }
 
