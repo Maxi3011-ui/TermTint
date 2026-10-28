@@ -35,6 +35,9 @@ final class HoverEngine {
         var dismissed: Bool = false
         /// A red dot you set by hand — see Marker.swift.
         var isMarked = false
+        /// Picked as a recipient for the next broadcast. Its own decision,
+        /// kept apart from the red dot on purpose — see Recipient.swift.
+        var isRecipient = false
         /// The session's tty, looked up when it is first needed for freezing.
         var tty: String?
 
@@ -92,6 +95,8 @@ final class HoverEngine {
     /// Runs only while a veil or a mark dot is on screen.
     private var attachmentTicker: Timer?
     private var markDots: [WindowRef: MarkDot] = [:]
+    private var pickVeils: [WindowRef: PickVeil] = [:]
+    private var isPicking = false
     private var veils: [WindowRef: FreezeVeil] = [:]
 
     private var states: [WindowRef: WindowState] = [:]
@@ -257,6 +262,7 @@ final class HoverEngine {
                                         tint: state.tint,
                                         role: state.role,
                                         isMarked: state.isMarked,
+                                        isRecipient: state.isRecipient,
                                         isMinimized: state.isMinimized)
             }
             .sorted { ($0.role.rawValue, $0.name.lowercased()) < ($1.role.rawValue, $1.name.lowercased()) }
@@ -547,6 +553,7 @@ final class HoverEngine {
         }
         // A mark is a decision about the window, so it comes back with it.
         state.isMarked = MarkStore.isMarked(anyOf: markKeys(for: state))
+        state.isRecipient = RecipientStore.isChosen(anyOf: markKeys(for: state))
         return state
     }
 
@@ -1099,6 +1106,77 @@ final class HoverEngine {
     /// can follow the marks without asking again and again.
     static let marksChanged = Notification.Name("TermTintMarksChanged")
 
+    /// Posted when a window is picked as a recipient, or dropped again.
+    static let recipientsChanged = Notification.Name("TermTintRecipientsChanged")
+
+    /// Called when the picking ends by itself — ⏎ or esc on a window.
+    var onPickingFinished: (() -> Void)?
+
+    /// Lays a sheet over every terminal so a tap picks the window instead of
+    /// typing into it. The hover overlay stands down meanwhile; two layers of
+    /// veil over the same window would only fight each other.
+    func setPicking(_ on: Bool) {
+        guard on != isPicking else { return }
+        isPicking = on
+        Log.write("Empfänger wählen: \(on ? "an" : "aus")")
+        if on {
+            setSuspended(true)
+        } else {
+            for veil in pickVeils.values { veil.hide() }
+            pickVeils.removeAll()
+            setSuspended(false)
+        }
+        refreshAttachments()
+    }
+
+    func toggleRecipient(_ ref: WindowRef) {
+        guard var state = states[ref] else { return }
+        if state.windowID == nil { state.windowID = windowID(of: ref, at: state.frame) }
+        state.isRecipient.toggle()
+        states[ref] = state
+        RecipientStore.set(state.isRecipient, for: markKeys(for: state))
+        Log.write("Empfänger: \(state.displayName) -> \(state.isRecipient ? "dabei" : "raus")")
+        NotificationCenter.default.post(name: HoverEngine.recipientsChanged, object: nil)
+        updatePickVeils()
+    }
+
+    func clearRecipients() {
+        for ref in Array(states.keys) { states[ref]?.isRecipient = false }
+        RecipientStore.clear()
+        NotificationCenter.default.post(name: HoverEngine.recipientsChanged, object: nil)
+        updatePickVeils()
+    }
+
+    private func updatePickVeils(visible: Set<Int>? = nil) {
+        guard isPicking else {
+            for veil in pickVeils.values { veil.hide() }
+            pickVeils.removeAll()
+            return
+        }
+        let onScreen = visible ?? visibleWindowIDs(all: true)
+        for (ref, state) in states {
+            guard state.isOnScreen, !state.isMinimized,
+                  let id = state.windowID, onScreen.contains(id) else {
+                pickVeils[ref]?.hide()
+                pickVeils[ref] = nil
+                continue
+            }
+            let veil = pickVeils[ref] ?? PickVeil()
+            veil.onClick = { [weak self] in self?.toggleRecipient(ref) }
+            veil.onFinish = { [weak self] in
+                self?.setPicking(false)
+                self?.onPickingFinished?()
+            }
+            pickVeils[ref] = veil
+            veil.show(over: state.frame, name: state.displayName, tint: state.tint,
+                      windowID: id, chosen: state.isRecipient)
+        }
+        for ref in pickVeils.keys where states[ref] == nil {
+            pickVeils[ref]?.hide()
+            pickVeils[ref] = nil
+        }
+    }
+
     var markedCount: Int { states.values.filter(\.isMarked).count }
 
     /// Marks or unmarks the window a terminal belongs to, named by its tty.
@@ -1424,13 +1502,14 @@ final class HoverEngine {
         let visible = visibleWindowIDs()
         updateVeils(visible: visible)
         updateMarkDots(visible: visible)
+        updatePickVeils(visible: isPicking ? visibleWindowIDs(all: true) : visible)
         syncAttachmentTicker()
         onLayoutChanged?()
     }
 
-    private func visibleWindowIDs() -> Set<Int> {
+    private func visibleWindowIDs(all: Bool = false) -> Set<Int> {
         let wanted = Set(states.values.compactMap { state -> Int? in
-            guard state.isMarked || freezer.isFrozen(state.tty) else { return nil }
+            guard all || state.isMarked || freezer.isFrozen(state.tty) else { return nil }
             return state.windowID
         })
         guard !wanted.isEmpty else { return [] }
@@ -1457,7 +1536,7 @@ final class HoverEngine {
     /// alone, and stops itself as soon as the last one is gone — at rest there
     /// is still no timer anywhere.
     private func syncAttachmentTicker() {
-        let needed = !veils.isEmpty || !markDots.isEmpty
+        let needed = !veils.isEmpty || !markDots.isEmpty || !pickVeils.isEmpty
         if needed, attachmentTicker == nil {
             let timer = Timer(timeInterval: 1.2, repeats: true) { [weak self] _ in
                 self?.refreshAttachments()

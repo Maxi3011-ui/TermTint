@@ -22,6 +22,7 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         let tint: Tint
         let role: Role
         let isMarked: Bool
+        let isRecipient: Bool
         let isMinimized: Bool
     }
 
@@ -31,6 +32,10 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
     /// not a window of its own standing over everything — it belongs to the
     /// terminal you are working in and goes where that goes.
     var anchorProvider: (() -> CGRect?)?
+
+    /// Turns the picking mode on and off in the engine: a sheet over every
+    /// terminal, so a tap picks that window.
+    var onPicking: ((Bool) -> Void)?
 
     private let panel = BroadcastPanel()
     private let view = BroadcastView()
@@ -68,7 +73,8 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         workspace.addObserver(self, selector: #selector(appDeactivated(_:)),
                               name: NSWorkspace.didDeactivateApplicationNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(marksChanged),
-                                               name: HoverEngine.marksChanged, object: nil)
+                                               name: HoverEngine.recipientsChanged, object: nil)
+        view.onPick = { [weak self] in self?.startPicking() }
 
         if isOn { syncVisibility(front: NSWorkspace.shared.frontmostApplication?.bundleIdentifier) }
     }
@@ -86,7 +92,20 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
 
     func close() {
         isOn = false
+        onPicking?(false)
         panel.orderOut(nil)
+    }
+
+    /// Sheets over the terminals; tap the ones that should get it, ⏎ ends it.
+    func startPicking() {
+        onPicking?(true)
+        view.say("Fenster antippen · ⏎ fertig", warning: false)
+    }
+
+    /// The engine says the picking is over — show what came out of it.
+    func pickingFinished() {
+        reload()
+        panel.makeFirstResponder(view.field)
     }
 
     /// Only while Terminal is in front — the bar is for the terminals, not
@@ -150,11 +169,11 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
 
     private func reload() {
         targets = targetsProvider?() ?? []
-        view.show(recipients: targets.filter(\.isMarked))
+        view.show(recipients: targets.filter(\.isRecipient))
         redock()
     }
 
-    private var recipients: [Target] { targets.filter(\.isMarked) }
+    private var recipients: [Target] { targets.filter(\.isRecipient) }
 
     // MARK: - Sending
 
@@ -163,7 +182,8 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         let receivers = recipients
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard !receivers.isEmpty else {
-            view.say(" Erst einen Chat mit dem roten Punkt markieren", warning: true)
+            view.say("Erst Fenster auswählen — Knopf rechts", warning: true)
+            startPicking()
             return
         }
 
@@ -243,8 +263,10 @@ final class BroadcastView: NSView {
     private let chips = ChipsView()
     private let effect = NSVisualEffectView()
     private let close = NSButton()
+    private let pick = NSButton()
 
     var onClose: (() -> Void)?
+    var onPick: (() -> Void)?
 
     /// Grows with the number of recipients, never with the window.
     var wantedSize: CGSize {
@@ -287,6 +309,14 @@ final class BroadcastView: NSView {
 
         addSubview(chips)
 
+        pick.title = "Fenster wählen"
+        pick.bezelStyle = .rounded
+        pick.controlSize = .small
+        pick.font = .systemFont(ofSize: 11)
+        pick.target = self
+        pick.action = #selector(pickPressed)
+        addSubview(pick)
+
         close.isBordered = false
         close.bezelStyle = .inline
         close.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "schließen")
@@ -299,11 +329,12 @@ final class BroadcastView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     @objc private func closePressed() { onClose?() }
+    @objc private func pickPressed() { onPick?() }
 
     func show(recipients: [Broadcast.Target]) {
         chips.items = recipients.map { ($0.name.isEmpty ? "Ohne Namen" : $0.name, $0.tint.base) }
         switch recipients.count {
-        case 0: say("Noch kein Chat markiert — roten Punkt am Fenster setzen", warning: false)
+        case 0: say("Noch keine Fenster gewählt — „Fenster wählen\u{201C} drücken", warning: false)
         case 1: say("⏎ schickt an 1 Chat", warning: false)
         case let count: say("⏎ schickt an \(count) Chats", warning: false)
         }
@@ -322,8 +353,11 @@ final class BroadcastView: NSView {
 
         close.frame = CGRect(x: bounds.maxX - 24, y: bounds.maxY - 24, width: 16, height: 16)
 
+        let pickWidth: CGFloat = 108
+        pick.frame = CGRect(x: inner.maxX - pickWidth, y: inner.maxY - Metrics.fieldHeight + 1,
+                            width: pickWidth, height: Metrics.fieldHeight - 2)
         field.frame = CGRect(x: inner.minX, y: inner.maxY - Metrics.fieldHeight,
-                             width: inner.width - 20, height: Metrics.fieldHeight)
+                             width: inner.width - pickWidth - 10, height: Metrics.fieldHeight)
 
         let chipsHeight = chips.height(forWidth: inner.width)
         chips.frame = CGRect(x: inner.minX,

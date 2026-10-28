@@ -17,6 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         engine.ownPanelFrame = { [broadcast] in broadcast.panelFrame }
         broadcast.anchorProvider = { [engine] in engine.focusedTerminalFrame() }
         engine.onLayoutChanged = { [broadcast] in broadcast.redock() }
+        broadcast.onPicking = { [engine] on in engine.setPicking(on) }
+        engine.onPickingFinished = { [broadcast] in broadcast.pickingFinished() }
         menuBar = MenuBarController(engine: engine, broadcast: broadcast)
 
         switcher.entriesProvider = { [engine] in engine.switcherEntries() }
