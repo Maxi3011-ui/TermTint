@@ -44,6 +44,19 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
     /// Who had the keyboard before, if TermTint had to come forward for it.
     private var previousApp: NSRunningApplication?
 
+    /// The last prompts, oldest first — the same thing the shell does with
+    /// ↑ and ↓, because the next prompt is so often the last one again.
+    private var history: [String] {
+        get { UserDefaults.standard.stringArray(forKey: "broadcastHistory") ?? [] }
+        set { UserDefaults.standard.set(Array(newValue.suffix(50)), forKey: "broadcastHistory") }
+    }
+    /// Where in the history we are, counted from the end; nil means "in the
+    /// line you are typing".
+    private var historyStep: Int?
+    /// What was typed before stepping back into the history, so ↓ all the way
+    /// forward gives it back instead of losing it.
+    private var draft = ""
+
     private var isOn: Bool {
         get { UserDefaults.standard.bool(forKey: "broadcastOpen") }
         set { UserDefaults.standard.set(newValue, forKey: "broadcastOpen") }
@@ -228,6 +241,7 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
         }
 
         view.field.stringValue = ""
+        remember(text)
         let ids = receivers.map(\.windowID)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let sent = Self.deliver(text, to: ids)
@@ -296,9 +310,58 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
     // MARK: - Field
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        guard selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
-        close()
-        return true
+        switch selector {
+        case #selector(NSResponder.cancelOperation(_:)):
+            close()
+            return true
+        case #selector(NSResponder.moveUp(_:)):
+            step(back: true)
+            return true
+        case #selector(NSResponder.moveDown(_:)):
+            step(back: false)
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// ↑ walks back through what was sent, ↓ forward again and finally back to
+    /// the half-typed line.
+    private func step(back: Bool) {
+        let entries = history
+        guard !entries.isEmpty else { return }
+
+        if back {
+            if historyStep == nil { draft = view.field.stringValue }
+            let next = min((historyStep ?? 0) + 1, entries.count)
+            historyStep = next
+            put(entries[entries.count - next])
+        } else {
+            guard let current = historyStep else { return }
+            if current <= 1 {
+                historyStep = nil
+                put(draft)
+            } else {
+                historyStep = current - 1
+                put(entries[entries.count - (current - 1)])
+            }
+        }
+    }
+
+    private func put(_ text: String) {
+        view.field.stringValue = text
+        // The cursor belongs at the end, ready to add to it — not in front of
+        // a line you have to walk through first.
+        view.field.currentEditor()?.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+    }
+
+    private func remember(_ text: String) {
+        var entries = history
+        // The same prompt twice in a row is one entry, as in the shell.
+        if entries.last != text { entries.append(text) }
+        history = entries
+        historyStep = nil
+        draft = ""
     }
 }
 
