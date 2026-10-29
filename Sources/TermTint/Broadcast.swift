@@ -264,19 +264,30 @@ final class Broadcast: NSObject, NSTextFieldDelegate {
     /// worse, change what it does.
     private static func deliver(_ text: String, to windowIDs: [Int]) -> Int {
         let sent = run(text, in: windowIDs)
-        // Claude Code does not send the line yet: text and line ending arrive
-        // in one go, and that reads as pasted text, which is allowed to carry
-        // newlines. The prompt sits in the input box and waits. A second,
-        // separate return is what submits it — the short pause matters, two
-        // writes in the same instant arrive as one chunk again.
         guard sent > 0 else { return sent }
-        Thread.sleep(forTimeInterval: 0.35)
-        // A carriage return, not an empty line. Pressing Return in a terminal
-        // sends CR (13); a line feed is what Claude Code treats as "new line
-        // inside the prompt", which is why the text sat in the input box and
-        // waited. The empty script before sent exactly that line feed.
-        let submitted = run("\r", in: windowIDs)
-        Log.write("Rundruf: Text an \(sent), Return an \(submitted)")
+
+        // Claude Code does not submit on its own: Terminal writes the text and
+        // its line ending in one chunk, and a chunk reads as pasted text,
+        // which is allowed to carry newlines. The prompt sits in the input box
+        // and waits for a return of its own — a carriage return (13), what the
+        // Return key sends; a line feed would only add another line.
+        //
+        // The pause before it is the whole difficulty. Arrives the return
+        // while the paste is still being taken in, it is swallowed by it and
+        // becomes one more newline — that was the "sometimes it sends,
+        // sometimes it just types". How long that window is depends on the
+        // length of the text and on how busy the session is, so a single
+        // guess cannot be right. Instead: wait longer the longer the prompt
+        // is, then knock twice more. A return on an empty input box does
+        // nothing, so the extra ones cost nothing and the prompt goes out.
+        let first = min(2.0, 0.6 + Double(text.count) / 2500)
+        Thread.sleep(forTimeInterval: first)
+        var submitted = run("\r", in: windowIDs)
+        for _ in 0..<2 {
+            Thread.sleep(forTimeInterval: 0.5)
+            submitted = max(submitted, run("\r", in: windowIDs))
+        }
+        Log.write("Rundruf: Text an \(sent), Return an \(submitted) (Pause \(String(format: "%.2f", first)) s, 3 Anläufe)")
         return sent
     }
 

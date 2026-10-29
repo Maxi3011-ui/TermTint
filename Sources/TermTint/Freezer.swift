@@ -319,9 +319,15 @@ final class FreezeVeil: NSPanel {
     /// - Parameters:
     ///   - frame: the Terminal window in Cocoa coordinates
     ///   - windowID: its window server id, to stack the veil right above it
+    /// The part of the window the veil lies on — asked from outside too, to
+    /// find out whether something in front is covering it.
+    static func body(over frame: CGRect, titleBarHeight: CGFloat) -> CGRect {
+        CGRect(x: frame.minX, y: frame.minY,
+               width: frame.width, height: max(0, frame.height - titleBarHeight))
+    }
+
     func show(over frame: CGRect, titleBarHeight: CGFloat, windowID: Int) {
-        let body = CGRect(x: frame.minX, y: frame.minY,
-                          width: frame.width, height: max(0, frame.height - titleBarHeight))
+        let body = Self.body(over: frame, titleBarHeight: titleBarHeight)
         if self.frame != body {
             setFrame(body, display: true)
             contentView?.subviews.first?.frame = contentView?.bounds ?? .zero

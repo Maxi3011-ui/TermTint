@@ -1581,6 +1581,52 @@ final class HoverEngine {
         }
     }
 
+    /// Whether a spot belonging to `windowID` may be seen — nothing from
+    /// another window lies in front of it there.
+    ///
+    /// This has to be decided by hand, because the stacking we ask for never
+    /// happens: an NSPanel can only be ordered relative to a window of its
+    /// own app. Handing `order(.above, relativeTo:)` the window number of a
+    /// Terminal window does not slot the panel in above it — it puts it in
+    /// front of everything. So a mark dot sat on top of the browser as long as
+    /// its terminal still counted as "on screen" somewhere underneath, which
+    /// is what kept the red dots hanging in the air.
+    ///
+    /// The window list runs front to back, so everything listed before the
+    /// window itself is above it.
+    /// - Parameter maxShare: how much of the spot may be covered before it
+    ///   counts as hidden. Zero for the dot — it is 13 pt wide, any overlap at
+    ///   all means it is sitting on someone else's window.
+    private func isFree(_ spot: CGRect, over windowID: Int, maxShare: Double = 0) -> Bool {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        for entry in currentWindowList() {
+            let number = entry[kCGWindowNumber as String] as? Int
+            // Reached our own window: everything from here on is behind it.
+            if number == windowID { return true }
+            guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0,
+                  let pid = entry[kCGWindowOwnerPID as String] as? pid_t, pid != ownPID,
+                  entry[kCGWindowIsOnscreen as String] as? Bool == true,
+                  (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0.05,
+                  let raw = entry[kCGWindowBounds as String] as? NSDictionary,
+                  let bounds = CGRect(dictionaryRepresentation: raw)
+            else { continue }
+            let overlap = Geo.cocoaRect(fromAX: bounds).intersection(spot)
+            guard !overlap.isNull, overlap.width > 4, overlap.height > 4 else { continue }
+            let share = Double(overlap.width * overlap.height)
+                / Double(max(1, spot.width * spot.height))
+            guard share > maxShare else { continue }
+            if Log.isEnabled {
+                let owner = entry[kCGWindowOwnerName as String] as? String ?? "?"
+                Log.write("Anhänger verdeckt: #\(windowID) von \(owner)#\(number ?? -1)")
+            }
+            return false
+        }
+        // Our window is not in the list at all. Then the question cannot be
+        // answered, and showing nothing is the safer of the two mistakes:
+        // a missing dot is a detail, a dot over someone else's app is a bug.
+        return false
+    }
+
     /// The dot has to be visible when nothing is hovered, so it is its own
     /// little window stacked directly above the one it belongs to.
     private func updateMarkDots(visible: Set<Int>? = nil) {
@@ -1590,6 +1636,14 @@ final class HoverEngine {
                   let id = state.windowID, onScreen.contains(id) else {
                 markDots[ref]?.hide()
                 if !state.isMarked { markDots[ref] = nil }
+                continue
+            }
+            // Exactly where the dot would sit, not the whole window: with
+            // the terminals tiled, the window next to it almost always
+            // overlaps a little, while the title bar corner stays free.
+            guard isFree(MarkDot.spot(over: state.frame, titleBarHeight: state.titleBarHeight),
+                         over: id) else {
+                markDots[ref]?.hide()
                 continue
             }
             let dot = markDots[ref] ?? MarkDot()
@@ -1614,6 +1668,15 @@ final class HoverEngine {
                   let id = state.windowID, onScreen.contains(id) else {
                 veils[ref]?.hide()
                 if !frozen { veils[ref] = nil }
+                continue
+            }
+            // A veil covers a whole window, so a sliver of overlap from the
+            // tiled window next door must not take it away — but anything
+            // genuinely lying on the window does, veil and all. The veil
+            // cannot cut holes the way the hover overlay can.
+            guard isFree(FreezeVeil.body(over: state.frame, titleBarHeight: state.titleBarHeight),
+                         over: id, maxShare: 0.2) else {
+                veils[ref]?.hide()
                 continue
             }
             let veil = veils[ref] ?? FreezeVeil()

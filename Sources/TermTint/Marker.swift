@@ -74,11 +74,17 @@ final class MarkDot: NSPanel {
     /// - Parameters:
     ///   - frame: the Terminal window in Cocoa coordinates
     ///   - windowID: its window server id, to stack the dot right above it
+    /// Where the dot belongs for a given window — asked from outside too,
+    /// to find out whether that spot is covered by something in front.
+    static func spot(over frame: CGRect, titleBarHeight: CGFloat) -> CGRect {
+        let bar = max(titleBarHeight, size + 6)
+        return CGRect(x: frame.maxX - 14 - size,
+                      y: frame.maxY - bar / 2 - size / 2,
+                      width: size, height: size)
+    }
+
     func show(over frame: CGRect, titleBarHeight: CGFloat, windowID: Int) {
-        let bar = max(titleBarHeight, Self.size + 6)
-        let spot = CGRect(x: frame.maxX - 14 - Self.size,
-                          y: frame.maxY - bar / 2 - Self.size / 2,
-                          width: Self.size, height: Self.size)
+        let spot = Self.spot(over: frame, titleBarHeight: titleBarHeight)
         if frame.width > Self.size * 4, self.frame != spot {
             setFrame(spot, display: true)
         }
