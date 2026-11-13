@@ -667,7 +667,7 @@ final class HoverEngine {
 
         let target = windowUnderPointer(point)
         if Log.isEnabled, target != hovered || force {
-            Log.write("move \(Int(point.x)),\(Int(point.y)) fenster=\(states.count) "
+            Log.write("move \(Geo.whole(point.x)),\(Geo.whole(point.y)) fenster=\(states.count) "
                 + "kandidaten=\(states.filter { $0.value.frame.contains(point) }.count) "
                 + "ziel=\(target == nil ? "nil" : "ja") vorher=\(hovered == nil ? "nil" : "ja") force=\(force)")
         }
@@ -793,6 +793,16 @@ final class HoverEngine {
             states[ref]?.frame = fresh
         }
 
+        // A window whose place is not a place: nothing drawn from it would be
+        // right, so nothing is drawn at all.
+        guard Geo.isSane(state.frame) else {
+            Log.write("  ausblenden: Rahmen ist kein Ort (\(Geo.text(state.frame)))")
+            freezeButton.hide()
+            markButton.hide()
+            panel.fadeOut()
+            return
+        }
+
         Log.write("  Schleier für \(state.displayName) auf \(Self.describe(state.frame))")
         panel.place(at: state.frame)
         panel.overlay.configure(tint: state.tint,
@@ -848,7 +858,7 @@ final class HoverEngine {
             guard let layer = entry[kCGWindowLayer as String] as? Int, layer == 0,
                   let pid = entry[kCGWindowOwnerPID as String] as? pid_t, pid != ownPID,
                   let raw = entry[kCGWindowBounds as String] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: raw)
+                  let bounds = CGRect(dictionaryRepresentation: raw), Geo.isSane(bounds)
             else { continue }
 
             // Windows reported on screen but invisible (Stage Manager, other
@@ -906,7 +916,7 @@ final class HoverEngine {
     }
 
     private static func describe(_ rect: CGRect) -> String {
-        "\(Int(rect.minX)),\(Int(rect.minY)) \(Int(rect.width))x\(Int(rect.height))"
+        Geo.text(rect)
     }
 
     private func redrawHovered() {
@@ -1377,7 +1387,7 @@ final class HoverEngine {
             watcher.setFrame(frames[index], for: ref)
             states[ref]?.frame = frames[index]
         }
-        Log.write("Markierte angeordnet: \(ordered.count) auf \(Int(area.width))x\(Int(area.height))")
+        Log.write("Markierte angeordnet: \(ordered.count) auf \(Geo.text(area))")
         refreshAttachments()
     }
 
@@ -1397,7 +1407,7 @@ final class HoverEngine {
             watcher.setFrame(frames[index], for: ref)
             states[ref]?.frame = frames[index]
         }
-        Log.write("Alle angeordnet: \(ordered.count) auf \(Int(area.width))x\(Int(area.height))")
+        Log.write("Alle angeordnet: \(ordered.count) auf \(Geo.text(area))")
         recordApplied(.tileAll)
         refreshAttachments()
     }
@@ -1608,7 +1618,7 @@ final class HoverEngine {
                   entry[kCGWindowIsOnscreen as String] as? Bool == true,
                   (entry[kCGWindowAlpha as String] as? Double ?? 1) > 0.05,
                   let raw = entry[kCGWindowBounds as String] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: raw)
+                  let bounds = CGRect(dictionaryRepresentation: raw), Geo.isSane(bounds)
             else { continue }
             let overlap = Geo.cocoaRect(fromAX: bounds).intersection(spot)
             guard !overlap.isNull, overlap.width > 4, overlap.height > 4 else { continue }

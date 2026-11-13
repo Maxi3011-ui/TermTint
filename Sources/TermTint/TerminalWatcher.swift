@@ -19,6 +19,28 @@ enum Geo {
         return CGRect(x: rect.minX, y: top - rect.maxY, width: rect.width, height: rect.height)
     }
 
+    /// Is this rectangle a real place on screen? The window list hands out
+    /// nonsense now and then — a window with no size, or coordinates that are
+    /// not numbers at all. Anything built from such a rectangle is wrong, and
+    /// writing one into the log used to bring the whole app down: turning an
+    /// infinite or not-a-number value into a whole number is a hard error in
+    /// Swift, and that is exactly what the log line did.
+    static func isSane(_ rect: CGRect) -> Bool {
+        rect.minX.isFinite && rect.minY.isFinite
+            && rect.width.isFinite && rect.height.isFinite
+    }
+
+    /// A coordinate for the log, safe whatever comes in.
+    static func whole(_ value: CGFloat) -> String {
+        guard value.isFinite, abs(value) < 1e15 else { return "?" }
+        return String(Int(value.rounded()))
+    }
+
+    /// A rectangle for the log, safe whatever comes in.
+    static func text(_ rect: CGRect) -> String {
+        "\(whole(rect.minX)),\(whole(rect.minY)) \(whole(rect.width))x\(whole(rect.height))"
+    }
+
     /// The way back, for telling a window where to go.
     static func axRect(fromCocoa rect: CGRect) -> CGRect {
         let top = NSScreen.screens.first?.frame.maxY ?? 0
@@ -365,8 +387,7 @@ final class TerminalWatcher {
                     let shared = $0.1.intersection(bounds)
                     return !shared.isNull && shared.width > 8 && shared.height > 8
                 }
-                Log.write("Nachgesehen #\(id): steht auf \(Int(bounds.minX)),\(Int(bounds.minY))"
-                    + " \(Int(bounds.width))x\(Int(bounds.height)), \(above.count) Fenster davor,"
+                Log.write("Nachgesehen #\(id): steht auf \(Geo.text(bounds)), \(above.count) Fenster davor,"
                     + " davon \(covering.count) darüberliegend"
                     + (covering.isEmpty ? "" : ": " + covering.map(\.0).joined(separator: ", ")))
                 return

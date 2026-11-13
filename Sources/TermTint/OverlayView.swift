@@ -504,6 +504,7 @@ final class OverlayView: NSView, NSTextFieldDelegate {
     private static func maskImage(size: CGSize, shape: CGRect, holes: [CGRect], scale: CGFloat) -> CGImage? {
         let pixels = CGSize(width: size.width * scale, height: size.height * scale)
         guard pixels.width >= 1, pixels.height >= 1,
+              pixels.width.isFinite, pixels.height.isFinite,
               let ctx = CGContext(data: nil,
                                   width: Int(pixels.width.rounded()),
                                   height: Int(pixels.height.rounded()),
