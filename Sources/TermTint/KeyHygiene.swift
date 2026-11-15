@@ -20,8 +20,26 @@ enum KeyHygiene {
         "cat", "less", "more", "tail", "head", "grep", "watch", "top", "htop",
         "vim", "nvim", "nano", "emacs", "ssh", "scp", "git", "gh", "npm",
         "npx", "yarn", "pnpm", "make", "cmake", "docker", "brew", "pip",
-        "caffeinate", "sudo", "env", "ls", "man",
+        "caffeinate", "sudo", "env", "ls", "man", "pbcopy", "pbpaste",
     ]
+
+    /// Titles that are not a name at all but a passing state of the window.
+    /// They end up in the store as if they identified a session, and the next
+    /// window that happens to show the same state inherits that name. Seen in
+    /// the store: "renaming... ⠦", "2 awaiting input · claude agents",
+    /// "! ] Action Required | Mit Notion verbinden".
+    private static func isPassing(_ trimmed: String) -> Bool {
+        // Two panes side by side: Terminal joins their titles with a bar.
+        if trimmed.contains(" | ") { return true }
+        if trimmed.hasPrefix("renaming") { return true }
+        if trimmed.contains("awaiting input") { return true }
+        if trimmed.contains("action required") { return true }
+        // A spinner frame anywhere in the title means it was caught mid-step.
+        if trimmed.unicodeScalars.contains(where: { (0x2800...0x28FF).contains(Int($0.value)) }) {
+            return true
+        }
+        return false
+    }
 
     /// True when the session name cannot tell two windows apart.
     static func isGeneric(_ name: String) -> Bool {
@@ -31,6 +49,7 @@ enum KeyHygiene {
         if programs.contains(trimmed) { return true }
         // A bare path is the working directory over again, not a name.
         if trimmed.hasPrefix("/") || trimmed.hasPrefix("~") { return true }
+        if isPassing(trimmed) { return true }
         return false
     }
 
