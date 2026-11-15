@@ -231,8 +231,13 @@ final class HoverEngine {
         let focused = watcher.focusedWindow
         // Minimised windows stay in the list — that is often exactly the old
         // project you are looking for.
-        return states.map { ref, state in
+        let live = states.filter { _, state in
+            // Being parked right now: already on the list below, and its
+            // window is about to close.
+            state.windowID.map { !parking.contains($0) } ?? true
+        }.map { ref, state in
             Switcher.Entry(ref: ref,
+                           parked: nil,
                            name: state.displayName,
                            caption: state.switcherCaption,
                            tint: state.tint,
@@ -248,6 +253,23 @@ final class HoverEngine {
                            isFrozen: freezer.isFrozen(state.tty),
                            isMarked: state.isMarked)
         }
+        let parked = ParkStore.all().map { session in
+            Switcher.Entry(ref: nil,
+                           parked: session,
+                           name: session.name,
+                           caption: [session.place, session.since]
+                               .filter { !$0.isEmpty }.joined(separator: " · "),
+                           tint: Tint(hue: CGFloat(session.hue), role: .claude),
+                           role: .claude,
+                           isFocused: false,
+                           activity: "",
+                           isWorking: false,
+                           isUnseen: false,
+                           isMinimized: false,
+                           isFrozen: false,
+                           isMarked: session.marked)
+        }
+        return live + parked
     }
 
     /// Recipients for the broadcast field. Only windows that are really
@@ -618,7 +640,13 @@ final class HoverEngine {
         if !state.roleLocked, role.isTool {
             state.role = role
             state.roleLocked = true
-            state.tint = Palette.tint(for: role, avoiding: hues(of: role, excluding: ref))
+            // A session fetched back from parking gets its old colour back.
+            if let id = state.windowID, let hue = restoredHues.removeValue(forKey: id),
+               role.hues.contains(CGFloat(hue)) {
+                state.tint = Tint(hue: CGFloat(hue), role: role)
+            } else {
+                state.tint = Palette.tint(for: role, avoiding: hues(of: role, excluding: ref))
+            }
         } else if !state.roleLocked, role == .shell || role == .other {
             state.role = state.role == .shell || state.role == .other ? state.role : role
         }
@@ -1455,6 +1483,110 @@ final class HoverEngine {
         return NSScreen.screens.first { $0.frame.contains(point) }
             ?? NSScreen.main
             ?? NSScreen.screens[0]
+    }
+
+    // MARK: - Parking
+
+    /// Windows whose session is being parked this moment.
+    private var parking: Set<Int> = []
+    /// Colours waiting for a window that was just fetched back, by window id.
+    private var restoredHues: [Int: Double] = [:]
+
+    var parkedSessions: [ParkedSession] {
+        ParkStore.all().sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// Ends the session, closes its window and keeps it on the list of parked
+    /// ones. Reached from the row button in the ⌥Tab overview.
+    @discardableResult
+    func park(_ ref: WindowRef) -> Result<ParkedSession, Parking.Refusal> {
+        guard var state = states[ref] else { return .failure(.init(text: "Fenster unbekannt")) }
+        if state.windowID == nil { state.windowID = windowID(of: ref, at: state.frame) }
+        guard let id = state.windowID, let tty = Freezer.ttys()[id] else {
+            Log.write("Parken: kein tty für das Fenster gefunden")
+            NSSound.beep()
+            return .failure(.init(text: "kein Terminal zu diesem Fenster gefunden"))
+        }
+        state.tty = tty
+        // A stopped process cannot be asked to end, so it has to run first.
+        if freezer.isFrozen(tty) {
+            freezer.thaw(tty)
+            state.activity.thaw()
+        }
+        states[ref] = state
+
+        let result = Parking.park(tty: tty, windowID: id, name: state.displayName,
+                                  manual: state.manualName != nil,
+                                  hue: Double(state.tint.hue), marked: state.isMarked) { [weak self] in
+            self?.parking.remove(id)
+        }
+        switch result {
+        case .success(let session):
+            parking.insert(id)
+            Log.write("geparkt: \(session.name) (\(session.id)) aus \(session.directory)")
+        case .failure(let refusal):
+            Log.write("Parken abgelehnt: \(state.displayName) — \(refusal.text)")
+            NSSound.beep()
+        }
+        refreshAttachments()
+        redrawHovered()
+        return result
+    }
+
+    /// Parks the session on a tty — the way in for other programs.
+    func park(tty: String) -> CommandInbox.Outcome {
+        let ttys = Freezer.ttys()
+        let match = states.first { ref, state in
+            guard let id = state.windowID ?? windowID(of: ref, at: state.frame) else { return false }
+            return ttys[id] == tty
+        }
+        guard let (ref, _) = match else { return .notFound }
+        switch park(ref) {
+        case .success(let session): return .ok("geparkt: " + session.name)
+        case .failure(let refusal): return .failed(refusal.text)
+        }
+    }
+
+    /// Opens the chat again where its window stood, with its name, its colour
+    /// and its red dot.
+    @discardableResult
+    func unpark(_ session: ParkedSession) -> Bool {
+        guard let id = Parking.resume(session) else {
+            Log.write("Zurückholen fehlgeschlagen: \(session.name)")
+            NSSound.beep()
+            return false
+        }
+        // Filed under the new window's id before the watcher has even seen
+        // it, so the window is born with what it had.
+        let key = LabelStore.windowKey(id)
+        if session.manual {
+            LabelStore.remember(session.name, hue: session.hue, directory: nil, for: [key])
+        }
+        if session.marked { MarkStore.set(true, for: [key]) }
+        restoredHues[id] = session.hue
+        ParkStore.remove(session.id)
+        Log.write("zurückgeholt: \(session.name) (\(session.id)) in Fenster #\(id)")
+        return true
+    }
+
+    /// By session id or, if that fits exactly one, by name.
+    func unpark(matching text: String) -> CommandInbox.Outcome {
+        let all = ParkStore.all()
+        let hits = all.filter { $0.id == text }.isEmpty
+            ? all.filter { $0.name.compare(text, options: .caseInsensitive) == .orderedSame }
+            : all.filter { $0.id == text }
+        guard hits.count == 1, let session = hits.first else {
+            return hits.isEmpty ? .notFound : .ambiguous
+        }
+        return unpark(session) ? .ok("zurückgeholt: " + session.name)
+                               : .failed("Terminal hat das Fenster nicht geöffnet")
+    }
+
+    /// Takes a chat off the list without opening it. The conversation itself
+    /// stays on disk.
+    func forgetParked(_ session: ParkedSession) {
+        ParkStore.remove(session.id)
+        Log.write("von der Parkliste genommen: \(session.name) (\(session.id))")
     }
 
     /// Pauses a session or lets it run on. Reached from the button in the

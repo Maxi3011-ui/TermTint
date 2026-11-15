@@ -7,7 +7,10 @@ import Carbon.HIToolbox
 final class Switcher {
 
     struct Entry {
-        let ref: WindowRef
+        /// The window — nil for a parked session, which has none.
+        let ref: WindowRef?
+        /// Set for a parked session: no process, no window, just the way back.
+        let parked: ParkedSession?
         let name: String
         let caption: String
         let tint: Tint
@@ -37,6 +40,10 @@ final class Switcher {
     var onToggleMinimize: ((WindowRef) -> Void)?
     /// Clicking a row's freeze button pauses that session or lets it run on.
     var onToggleFreeze: ((WindowRef) -> Void)?
+    /// Clicking a row's park button ends that session and keeps it listed.
+    var onPark: ((WindowRef) -> Void)?
+    /// Choosing a parked row opens that chat again.
+    var onUnpark: ((ParkedSession) -> Void)?
     /// Clicking a row's red dot marks that window, or takes the mark off.
     var onToggleMark: ((WindowRef) -> Void)?
     /// Brings every minimised window back.
@@ -78,6 +85,7 @@ final class Switcher {
         view.onDotClick = { [weak self] index in self?.toggleMinimize(index) }
         view.onFreezeClick = { [weak self] index in self?.toggleFreeze(index) }
         view.onMarkClick = { [weak self] index in self?.toggleMark(index) }
+        view.onParkClick = { [weak self] index in self?.park(index) }
         view.onRestoreAll = { [weak self] in self?.restoreAll() }
         view.onMinimizeFrozen = { [weak self] in self?.minimizeFrozen() }
         view.onRaiseMarked = { [weak self] in self?.raiseMarked() }
@@ -130,23 +138,29 @@ final class Switcher {
     /// Unlike minimising, this is carried out at once: it signals a process
     /// rather than asking Terminal to move a window, so ⌥ being held is
     /// harmless.
+    private func park(_ index: Int) {
+        guard isShowing, entries.indices.contains(index), let ref = entries[index].ref else { return }
+        onPark?(ref)
+        refreshEntries()
+    }
+
     private func toggleMark(_ index: Int) {
-        guard isShowing, entries.indices.contains(index) else { return }
-        onToggleMark?(entries[index].ref)
+        guard isShowing, entries.indices.contains(index), let ref = entries[index].ref else { return }
+        onToggleMark?(ref)
         selection = index
         refreshEntries()
     }
 
     private func toggleFreeze(_ index: Int) {
-        guard isShowing, entries.indices.contains(index) else { return }
-        onToggleFreeze?(entries[index].ref)
+        guard isShowing, entries.indices.contains(index), let ref = entries[index].ref else { return }
+        onToggleFreeze?(ref)
         selection = index
         refreshEntries()
     }
 
     private func toggleMinimize(_ index: Int) {
-        guard isShowing, entries.indices.contains(index) else { return }
-        onToggleMinimize?(entries[index].ref)
+        guard isShowing, entries.indices.contains(index), let ref = entries[index].ref else { return }
+        onToggleMinimize?(ref)
         selection = index
         refreshEntries()
     }
@@ -313,9 +327,12 @@ final class Switcher {
         let target = entries.indices.contains(selection) ? entries[selection] : nil
         entries = []
 
-        if activating, let target {
+        if activating, let session = target?.parked {
+            Log.write("Übersicht schließt: \(session.name) wird zurückgeholt")
+            onUnpark?(session)
+        } else if activating, let target, let ref = target.ref {
             Log.write("Übersicht schließt: \(target.name) nach vorn")
-            onActivate?(target.ref)
+            onActivate?(ref)
         } else if let previousApp, !previousApp.isTerminated {
             Log.write("Übersicht schließt ohne Wechsel (zurück zu \(previousApp.localizedName ?? "?"))")
             previousApp.activate()
@@ -326,6 +343,8 @@ final class Switcher {
 
     private func sorted(_ entries: [Entry]) -> [Entry] {
         entries.sorted { lhs, rhs in
+            // Parked sessions form their own block at the very end.
+            if (lhs.parked != nil) != (rhs.parked != nil) { return lhs.parked == nil }
             let left = Self.roleOrder.firstIndex(of: lhs.role) ?? Self.roleOrder.count
             let right = Self.roleOrder.firstIndex(of: rhs.role) ?? Self.roleOrder.count
             if left != right { return left < right }
@@ -426,6 +445,11 @@ final class SwitcherView: NSView {
     var onMarkClick: ((Int) -> Void)? {
         get { rows.onMarkClick }
         set { rows.onMarkClick = newValue }
+    }
+
+    var onParkClick: ((Int) -> Void)? {
+        get { rows.onParkClick }
+        set { rows.onParkClick = newValue }
     }
     var onRestoreAll: (() -> Void)? {
         get { footer.onRestoreAll }
@@ -883,7 +907,7 @@ final class SwitcherView: NSView {
     private final class RowsView: NSView {
 
         private enum Row {
-            case header(Role)
+            case header(String, NSColor)
             case entry(Switcher.Entry, index: Int)
         }
 
@@ -896,6 +920,8 @@ final class SwitcherView: NSView {
         var onDotClick: ((Int) -> Void)?
         var onFreezeClick: ((Int) -> Void)?
         var onMarkClick: ((Int) -> Void)?
+        var onParkClick: ((Int) -> Void)?
+        private var hotPark: Int?
         private var hotDot: Int?
         private var hotFreeze: Int?
         private var hotMark: Int?
@@ -920,7 +946,9 @@ final class SwitcherView: NSView {
             let overDot = dotIndex(at: point)
             let overFreeze = freezeIndex(at: point)
             let overMark = markIndex(at: point)
-            if overDot != hotDot || overFreeze != hotFreeze || overMark != hotMark {
+            let overPark = parkIndex(at: point)
+            if overDot != hotDot || overFreeze != hotFreeze || overMark != hotMark || overPark != hotPark {
+                hotPark = overPark
                 hotDot = overDot
                 hotFreeze = overFreeze
                 hotMark = overMark
@@ -931,7 +959,8 @@ final class SwitcherView: NSView {
         }
 
         override func mouseExited(with event: NSEvent) {
-            guard hotDot != nil || hotFreeze != nil || hotMark != nil else { return }
+            guard hotDot != nil || hotFreeze != nil || hotMark != nil || hotPark != nil else { return }
+            hotPark = nil
             hotDot = nil
             hotFreeze = nil
             hotMark = nil
@@ -956,6 +985,10 @@ final class SwitcherView: NSView {
                 onMarkClick?(mark)
                 return
             }
+            if let park = parkIndex(at: point) {
+                onParkClick?(park)
+                return
+            }
             guard let index = index(at: point) else { return }
             onClick?(index)
         }
@@ -963,7 +996,7 @@ final class SwitcherView: NSView {
         /// Generous target around the little colour dot — 9 points is far too
         /// small to hit comfortably.
         private func dotIndex(at point: CGPoint) -> Int? {
-            guard let index = index(at: point), let row = rowFrame(for: index) else { return nil }
+            guard let index = index(at: point), !isParked(index), let row = rowFrame(for: index) else { return nil }
             let target = CGRect(x: row.minX + 6, y: row.midY - 14, width: 27, height: 28)
             return target.contains(point) ? index : nil
         }
@@ -977,6 +1010,7 @@ final class SwitcherView: NSView {
         /// What releasing ⌥ over this row should do instead of switching to
         /// the window: the little buttons come first, the row itself last.
         func actionUnderPointer() -> (() -> Void)? {
+            if let index = hotPark { return { [weak self] in self?.onParkClick?(index) } }
             if let index = hotMark { return { [weak self] in self?.onMarkClick?(index) } }
             if let index = hotFreeze { return { [weak self] in self?.onFreezeClick?(index) } }
             if let index = hotDot { return { [weak self] in self?.onDotClick?(index) } }
@@ -988,13 +1022,36 @@ final class SwitcherView: NSView {
             freezeFrame(in: row).offsetBy(dx: -28, dy: 0)
         }
 
+        /// Left of the mark. Only Claude sessions that are at rest have it:
+        /// nothing else can be fetched back, and a working one must not be cut off.
+        static func parkFrame(in row: CGRect) -> CGRect {
+            markFrame(in: row).offsetBy(dx: -28, dy: 0)
+        }
+
+        private func entry(_ index: Int) -> Switcher.Entry? {
+            for case .entry(let entry, let candidate) in rows where candidate == index { return entry }
+            return nil
+        }
+
+        private func isParked(_ index: Int) -> Bool { entry(index)?.parked != nil }
+
+        private static func canPark(_ entry: Switcher.Entry) -> Bool {
+            entry.parked == nil && entry.role == .claude && !entry.isWorking
+        }
+
+        private func parkIndex(at point: CGPoint) -> Int? {
+            guard let index = index(at: point), let entry = entry(index), Self.canPark(entry),
+                  let row = rowFrame(for: index) else { return nil }
+            return Self.parkFrame(in: row).insetBy(dx: -3, dy: -4).contains(point) ? index : nil
+        }
+
         private func markIndex(at point: CGPoint) -> Int? {
-            guard let index = index(at: point), let row = rowFrame(for: index) else { return nil }
+            guard let index = index(at: point), !isParked(index), let row = rowFrame(for: index) else { return nil }
             return Self.markFrame(in: row).insetBy(dx: -3, dy: -4).contains(point) ? index : nil
         }
 
         private func freezeIndex(at point: CGPoint) -> Int? {
-            guard let index = index(at: point), let row = rowFrame(for: index) else { return nil }
+            guard let index = index(at: point), !isParked(index), let row = rowFrame(for: index) else { return nil }
             return Self.freezeFrame(in: row).insetBy(dx: -4, dy: -4).contains(point) ? index : nil
         }
 
@@ -1046,11 +1103,13 @@ final class SwitcherView: NSView {
         func configure(entries: [Switcher.Entry], selected: Int) {
             self.selected = selected
             rows = []
-            var lastRole: Role?
+            var lastGroup: String?
             for (index, entry) in entries.enumerated() {
-                if entry.role != lastRole {
-                    rows.append(.header(entry.role))
-                    lastRole = entry.role
+                let group = entry.parked == nil ? entry.role.label : "Geparkt"
+                if group != lastGroup {
+                    rows.append(.header(group, entry.parked == nil ? entry.role.representativeColor
+                                                                   : ParkLook.blue))
+                    lastGroup = group
                 }
                 rows.append(.entry(entry, index: index))
             }
@@ -1066,8 +1125,8 @@ final class SwitcherView: NSView {
             var y = Metrics.padding
             for row in rows {
                 switch row {
-                case .header(let role):
-                    draw(header: role, atTop: y)
+                case .header(let title, let colour):
+                    draw(header: title, colour: colour, atTop: y)
                     y += Metrics.headerHeight
                 case .entry(let entry, let index):
                     draw(entry: entry, atTop: y, isSelected: index == selected, entryIndex: index)
@@ -1076,10 +1135,10 @@ final class SwitcherView: NSView {
             }
         }
 
-        private func draw(header role: Role, atTop y: CGFloat) {
-            let text = NSAttributedString(string: role.label.uppercased(), attributes: [
+        private func draw(header title: String, colour: NSColor, atTop y: CGFloat) {
+            let text = NSAttributedString(string: title.uppercased(), attributes: [
                 .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
-                .foregroundColor: role.representativeColor.withAlphaComponent(0.85),
+                .foregroundColor: colour.withAlphaComponent(0.85),
                 .kern: 1.3,
             ])
             text.draw(with: CGRect(x: Metrics.padding + 14, y: y + 11,
@@ -1108,7 +1167,8 @@ final class SwitcherView: NSView {
                 NSBezierPath(ovalIn: dot.insetBy(dx: -7.5, dy: -7.5)).fill()
             }
             let dotColour = entry.tint.base.withAlphaComponent(entry.role == .shell ? 0.75 : 1)
-            if entry.isMinimized {
+            let isParked = entry.parked != nil
+            if entry.isMinimized || isParked {
                 // Hollow instead of filled: present, but put away.
                 dotColour.setStroke()
                 let ring = NSBezierPath(ovalIn: dot.insetBy(dx: 0.75, dy: 0.75))
@@ -1122,18 +1182,29 @@ final class SwitcherView: NSView {
             // Drawn before any early return below, so every row keeps its
             // button — including the ones with nothing to say on the right.
             let freeze = Self.freezeFrame(in: row)
-            drawFreezeButton(in: freeze, frozen: entry.isFrozen, isHot: hotFreeze == entryIndex)
             let mark = Self.markFrame(in: row)
-            drawMarkButton(in: mark, marked: entry.isMarked, isHot: hotMark == entryIndex)
+            let park = Self.parkFrame(in: row)
+            if isParked {
+                // No buttons: the row itself is the way back. The red dot
+                // stays visible so you know which ones you had marked.
+                if entry.isMarked { drawMarkButton(in: freeze, marked: true, isHot: false) }
+            } else {
+                drawFreezeButton(in: freeze, frozen: entry.isFrozen, isHot: hotFreeze == entryIndex)
+                drawMarkButton(in: mark, marked: entry.isMarked, isHot: hotMark == entryIndex)
+                if Self.canPark(entry) { drawParkButton(in: park, isHot: hotPark == entryIndex) }
+            }
 
             let captionWidth: CGFloat = 168
-            let captionRight = mark.minX - 8
+            // The same edge in every row, whether or not it has all three
+            // buttons — a ragged right column reads far worse than a gap.
+            let captionRight = (isParked ? freeze.minX : park.minX) - 8
             let nameStyle = NSMutableParagraphStyle()
             nameStyle.lineBreakMode = .byTruncatingTail
             let name = NSAttributedString(string: entry.name.isEmpty ? "Ohne Namen" : entry.name, attributes: [
                 .font: NSFont.systemFont(ofSize: 14.5, weight: isSelected ? .semibold : .medium),
                 .foregroundColor: NSColor(white: 1,
-                                          alpha: entry.name.isEmpty ? 0.45 : (entry.isMinimized ? 0.60 : 0.95)),
+                                          alpha: entry.name.isEmpty ? 0.45
+                                              : (entry.isMinimized || isParked ? 0.60 : 0.95)),
                 .paragraphStyle: nameStyle,
             ])
             let nameLeft = dot.maxX + 13
@@ -1190,6 +1261,27 @@ final class SwitcherView: NSView {
             let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 5.75, dy: 5.75))
             ring.lineWidth = 1.5
             ring.stroke()
+        }
+
+        /// As quiet as the snowflake next to it, blue once you reach for it.
+        private func drawParkButton(in rect: CGRect, isHot: Bool) {
+            if isHot {
+                ParkLook.blue.withAlphaComponent(0.85).setFill()
+                NSBezierPath(ovalIn: rect).fill()
+            }
+            let colour = NSColor(white: 1, alpha: isHot ? 0.98 : 0.34)
+            guard let symbol = NSImage(systemSymbolName: "moon.zzz.fill", accessibilityDescription: "Parken")?
+                .withSymbolConfiguration(.init(pointSize: 11.5, weight: .semibold))
+            else { return }
+            let glyph = NSImage(size: symbol.size, flipped: false) { bounds in
+                symbol.draw(in: bounds)
+                colour.set()
+                bounds.fill(using: .sourceAtop)
+                return true
+            }
+            let size = symbol.size
+            glyph.draw(in: CGRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2,
+                                  width: size.width, height: size.height))
         }
 
         /// Quiet until you need it: a pale snowflake normally, the full lilac

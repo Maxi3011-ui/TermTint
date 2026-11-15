@@ -16,12 +16,19 @@ final class CommandInbox {
         case ok(String)
         case notFound
         case ambiguous
+        case failed(String)
     }
 
     /// Mark or unmark the window belonging to a tty.
     var onMark: ((String, Bool) -> Outcome)?
     /// Fetch every marked window forward; returns how many.
     var onFront: (() -> Int)?
+    /// Park the session on a tty.
+    var onPark: ((String) -> Outcome)?
+    /// Fetch a parked session back, by session id or name.
+    var onUnpark: ((String) -> Outcome)?
+    /// One line per parked session: id, tab, name.
+    var onListParked: (() -> [String])?
 
     private let inbox: URL
     private let outbox: URL
@@ -89,6 +96,13 @@ final class CommandInbox {
             answer(id, mark(argument, true))
         case "unmark", "demarkiere":
             answer(id, mark(argument, false))
+        case "park", "parke":
+            answer(id, argument.isEmpty ? .notFound : (onPark?(argument) ?? .notFound))
+        case "unpark", "hole":
+            answer(id, argument.isEmpty ? .notFound : (onUnpark?(argument) ?? .notFound))
+        case "parked", "geparkt":
+            let lines = onListParked?() ?? []
+            write(id, ok: true, text: lines.isEmpty ? "nichts geparkt" : lines.joined(separator: "\n"))
         case "raise-marked", "front", "vorn":
             let count = onFront?() ?? 0
             write(id, ok: true, text: "ok: \(count) markierte Fenster nach vorn")
@@ -110,6 +124,8 @@ final class CommandInbox {
             write(id, ok: false, text: "fehler: kein Fenster zu diesem Terminal gefunden")
         case .ambiguous:
             write(id, ok: false, text: "fehler: mehrdeutig, nichts geändert")
+        case .failed(let why):
+            write(id, ok: false, text: "fehler: \(why)")
         }
     }
 

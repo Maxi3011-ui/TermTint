@@ -70,6 +70,38 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         thaw.isEnabled = engine.frozenCount > 0
         menu.addItem(thaw)
 
+        let parked = engine.parkedSessions
+        let parkedItem = NSMenuItem(title: parked.isEmpty ? "Keine Sitzung geparkt"
+                                                          : "Geparkt (\(parked.count))",
+                                    action: nil, keyEquivalent: "")
+        parkedItem.isEnabled = !parked.isEmpty
+        if !parked.isEmpty {
+            let list = NSMenu()
+            for session in parked {
+                let detail = [session.place, session.since].filter { !$0.isEmpty }.joined(separator: " · ")
+                let item = NSMenuItem(title: session.name.isEmpty ? "Ohne Namen" : session.name,
+                                      action: nil, keyEquivalent: "")
+                item.toolTip = detail
+                let actions = NSMenu()
+                let info = NSMenuItem(title: detail, action: nil, keyEquivalent: "")
+                info.isEnabled = false
+                actions.addItem(info)
+                let back = NSMenuItem(title: "Zurückholen", action: #selector(unpark(_:)), keyEquivalent: "")
+                back.target = self
+                back.representedObject = session.id
+                actions.addItem(back)
+                let drop = NSMenuItem(title: "Von der Liste nehmen", action: #selector(forgetParked(_:)),
+                                      keyEquivalent: "")
+                drop.target = self
+                drop.representedObject = session.id
+                actions.addItem(drop)
+                item.submenu = actions
+                list.addItem(item)
+            }
+            parkedItem.submenu = list
+        }
+        menu.addItem(parkedItem)
+
         let unmark = NSMenuItem(title: "Alle Markierungen entfernen",
                                 action: #selector(clearMarks), keyEquivalent: "")
         unmark.target = self
@@ -132,6 +164,18 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func thawAll() {
         engine.thawAll()
+    }
+
+    @objc private func unpark(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let session = engine.parkedSessions.first(where: { $0.id == id }) else { return }
+        engine.unpark(session)
+    }
+
+    @objc private func forgetParked(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let session = engine.parkedSessions.first(where: { $0.id == id }) else { return }
+        engine.forgetParked(session)
     }
 
     @objc private func toggleRename() {

@@ -4,6 +4,9 @@
 # termtint mark   --self | --pid <PID> | --tty <ttysNNN>
 # termtint unmark --self | --pid <PID> | --tty <ttysNNN>
 # termtint raise-marked
+# termtint park   --self | --pid <PID> | --tty <ttysNNN>   Sitzung beenden, Fenster zu, bleibt auf der Parkliste
+# termtint unpark <Sitzungs-ID | Name>                     geparkte Sitzung wieder öffnen
+# termtint parked                                          Parkliste: ID, Name, Ordner
 #
 # Gibt eine Zeile aus. Exit 0 = erledigt, 1 = Fehler, 2 = TermTint antwortet nicht.
 #
@@ -23,7 +26,7 @@ shift || true
 
 ziel=""
 case "$befehl" in
-  mark|unmark|markiere|demarkiere)
+  mark|unmark|markiere|demarkiere|park|parke)
     case "${1:-}" in
       --self)
         ziel=$(ps -o tty= -p "$PPID" 2>/dev/null | tr -d ' ')
@@ -43,7 +46,11 @@ case "$befehl" in
     esac
     ziel="/dev/$ziel"
     ;;
-  raise-marked|front|vorn) ;;
+  unpark|hole)
+    [ -n "${1:-}" ] || fehler "fehler: unpark braucht eine Sitzungs-ID oder einen Namen"
+    ziel="$*"
+    ;;
+  raise-marked|front|vorn|parked|geparkt) ;;
   *) fehler "fehler: unbekannter Befehl $befehl" ;;
 esac
 

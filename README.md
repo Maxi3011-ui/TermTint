@@ -77,6 +77,26 @@ weiterlaufen, wo es stand.
 - Beim Beenden von TermTint und beim Schließen eines eingefrorenen Fensters
   wird automatisch aufgetaut. Im Menü: „Alle auftauen“.
 
+## Parken
+
+Einfrieren hält eine Sitzung nur an: sie rechnet nicht mehr, behält aber ihren
+Arbeitsspeicher (rund 300 bis 500 MB je Claude-Sitzung). Parken gibt alles frei.
+
+In der ⌥Tab-Übersicht hat jede ruhende Claude-Zeile einen Mond-Knopf. Er beendet
+die Sitzung, schließt das Fenster und setzt den Chat auf die Liste **Geparkt**
+am Ende der Übersicht (und im Menü). Die Liste bleibt, bis ein Chat zurückgeholt
+oder von Hand gestrichen wird. Ein Klick auf die Zeile öffnet das Fenster am
+alten Platz und startet `claude --resume <id>` im richtigen Ordner; Name, Farbe
+und roter Punkt kommen mit.
+
+- Arbeitende Sitzungen werden nicht geparkt.
+- Hintergrundaufgaben der Sitzung enden mit ihr, und andere Programme
+  erreichen sie erst wieder, wenn sie zurückgeholt ist.
+- Der Gesprächsverlauf liegt in `~/.claude/projects`. Claude Code räumt dort
+  nach `cleanupPeriodDays` Tagen auf (Standard 30), also diesen Wert in
+  `~/.claude/settings.json` hochsetzen.
+- Von außen: `tools/termtint park --tty ttysNNN`, `unpark <ID | Name>`, `parked`.
+
 ## Installation
 
 ```

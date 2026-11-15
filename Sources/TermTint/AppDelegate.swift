@@ -28,6 +28,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switcher.setOverlayEnabled = { [engine] enabled in engine.setEnabled(enabled) }
         switcher.onToggleMinimize = { [engine] ref in engine.toggleMinimize(ref) }
         switcher.onToggleFreeze = { [engine] ref in engine.toggleFreeze(ref) }
+        switcher.onPark = { [engine] ref in engine.park(ref) }
+        switcher.onUnpark = { [engine] session in engine.unpark(session) }
         switcher.onToggleMark = { [engine] ref in engine.toggleMark(ref) }
         switcher.onRestoreAll = { [engine] in engine.restoreAllMinimized() }
         switcher.onMinimizeFrozen = { [engine] in engine.minimizeAllFrozen() }
@@ -51,6 +53,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         engine.start()
         inbox.onMark = { [engine] tty, marked in engine.setMark(tty: tty, marked: marked) }
         inbox.onFront = { [engine] in engine.frontMarked() }
+        inbox.onPark = { [engine] tty in engine.park(tty: tty) }
+        inbox.onUnpark = { [engine] text in engine.unpark(matching: text) }
+        inbox.onListParked = { [engine] in
+            engine.parkedSessions.map { "\($0.id)\t\($0.name)\t\($0.directory)" }
+        }
         inbox.start()
 
         switcher.start()
