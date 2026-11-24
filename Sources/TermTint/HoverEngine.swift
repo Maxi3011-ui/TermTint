@@ -168,8 +168,8 @@ final class HoverEngine {
         monitors.append(NSEvent.addGlobalMonitorForEvents(matching: moves) { [weak self] _ in
             self?.pointerMoved()
         } as Any)
-        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: clicks) { [weak self] _ in
-            self?.pointerClicked()
+        monitors.append(NSEvent.addGlobalMonitorForEvents(matching: clicks) { [weak self] event in
+            self?.pointerClicked(clickCount: event.clickCount)
         } as Any)
         monitors.append(NSEvent.addGlobalMonitorForEvents(matching: [.keyDown]) { [weak self] _ in
             self?.keyPressed()
@@ -952,7 +952,7 @@ final class HoverEngine {
         show(hovered, state)
     }
 
-    private func pointerClicked() {
+    private func pointerClicked(clickCount: Int) {
         // A click usually raises a window, and that changes nothing the
         // watcher reports — not the list, not the geometry, not the title. The
         // little mark dots would stay buried under the window they belong to,
@@ -969,6 +969,12 @@ final class HoverEngine {
         else { return }
 
         if nameWasHit() {
+            // One click on the name is just a click on the window: it comes
+            // to the front and the overlay stays, because the second click of
+            // a double click still has to find the name. Only the second one
+            // opens the name for editing — a single click used to, and then
+            // there was no way to simply bring that window forward.
+            guard clickCount >= 2 else { return }
             beginEditing(hovered)
         } else if freezer.isFrozen(states[hovered]?.tty) {
             return
