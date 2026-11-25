@@ -345,6 +345,19 @@ def write_labels(pairs, store):
     return written
 
 
+def already_open():
+    """Sitzungen, die gerade schon in einem Terminal laufen."""
+    out = subprocess.run(["ps", "-Ao", "command="], capture_output=True, text=True).stdout
+    found = set(re.findall(r"--resume\s+([0-9a-f-]{8,})", out))
+    # Der Chat, aus dem heraus wiederhergestellt wird, steht nicht immer mit
+    # --resume in der Prozessliste — wer ihn über die Auswahl geöffnet hat,
+    # startet schlicht `claude`. Die eigene Sitzung sagt die Umgebung.
+    mine = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if mine:
+        found.add(mine)
+    return found
+
+
 def restore():
     if not os.path.exists(SNAPSHOT):
         sys.exit("Noch nichts gesichert. Erst: fenster.py save")
