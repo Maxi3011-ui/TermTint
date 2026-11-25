@@ -10,7 +10,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBar: MenuBarController?
     private var permissionCheck: Timer?
 
+
+    /// Two copies of TermTint draw two of everything: two red dots, two freeze
+    /// buttons, two overlays fighting over the same window. It happened because
+    /// a run straight from the build folder survived an install into
+    /// /Applications. Whoever starts last wins — that is the fresh build.
+    private static func endOtherCopies() {
+        guard let me = Bundle.main.bundleIdentifier else { return }
+        let others = NSRunningApplication.runningApplications(withBundleIdentifier: me)
+            .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+        guard !others.isEmpty else { return }
+        for other in others { other.terminate() }
+        // terminate() is a polite request; a copy that ignores it would keep
+        // drawing, so after a moment the unpolite one follows.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            for other in others where !other.isTerminated { other.forceTerminate() }
+        }
+        Log.write("Start: \(others.count) weitere Kopie(n) von TermTint beendet")
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Self.endOtherCopies()
         NSApp.setActivationPolicy(.accessory)
         MainMenu.install()
         broadcast.targetsProvider = { [engine] in engine.broadcastTargets() }
